@@ -29,6 +29,7 @@
 # MODIFIED: 초과 Case 58 - 매크로 위험 감지 시 강제 퇴근 사유 명문화 및 비대칭 수동 진입 권고 타전망 결속 (숏 금지 로직 최저가 도달 시 무조건 격발)
 # MODIFIED: 매크로 위험(스퀴즈 및 진폭 한계) 롱 차단 기준을 1.5%에서 절대헌법 1.0%로 보수적 하향 락온 적용
 # NEW: 무인 자동 깃허브 업데이트 폴링망(auto_update_loop) 백그라운드 결속 및 시스템 대기 시간대(17:00~03:59 EST) 하드 락온
+# NEW: 토스증권 API 통신망 일시 붕괴 복구 시 1회성 정상화 타전망(Silent Recovery 알림) 결속
 
 import sys
 import os
@@ -297,7 +298,10 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                 holdings_qty = int(math.floor(holdings_detail['qty']))
                 shared_holdings[symbol] = holdings_qty
                 
+                # NEW: 통신망 일시 붕괴 복구 시 1회성 정상화 타전망 결속
                 if last_error_msg != "":
+                    await notify_tg(f"✅ <b>[aVWAP {symbol}] 토스증권 API 통신망 복구 완료</b>\n▫️ 서버 응답 정상화. 레이더 감시 및 전술 연산을 즉시 재개합니다.")
+                    print(f"✅ [통신 복구 {symbol}] 억제 해제 및 정상화 타전 완료.", flush=True)
                     last_error_msg = ""
             except Exception as e:
                 err_str = str(e)
