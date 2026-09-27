@@ -24,6 +24,7 @@
 # NEW: 초과 Case 58 - 관제탑 UI MACRO_BLOCKED 감지 시 '🛑 강제퇴근' 원자적 렌더링 결속
 # NEW: 나스닥 100 선물지수(NQ=F) 실시간 관제 UI 렌더링 및 비동기 수집망 결속
 # MODIFIED: 관제탑 UI NQ=F 실시간 진폭(Amplitude) 연산 및 렌더링 결속
+# NEW: 관제탑 UI NQ=F 저가 대비 현재가 실시간 반등 진폭(nq_current_amp) 연산 및 2줄 분리 렌더링 결속
 
 import os
 import html
@@ -179,8 +180,9 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
 
     nq_c, nq_h, nq_l = await fetch_nq_futures()
     
-    # NEW: NQ=F 진폭(Amplitude) 연산 및 ZeroDivision 방어 결속
+    # MODIFIED: NQ=F 총 진폭 연산 유지 및 현재가 반등 진폭 연산 추가 결속
     nq_amp = ((nq_h - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
+    nq_current_amp = ((nq_c - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
 
     price_l = await api_client.get_current_price("SOXL")
     price_s = await api_client.get_current_price("SOXS")
@@ -341,10 +343,12 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     
     scan_time = now_est.strftime("%m-%d %H:%M:%S")
 
+    # MODIFIED: NQ=F UI 렌더링 2줄 분리 결속 (총 진폭 및 저점 대비 반등)
     text = f"""📡 <b>[aVWAP 레이더]</b> {market_header}
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
 🌐 <b>나스닥 100 선물 (NQ=F)</b>
-▫️ 현재: <code>{nq_c:.2f}</code> | 고가: <code>{nq_h:.2f}</code> | 저가: <code>{nq_l:.2f}</code> | 진폭: <code>{nq_amp:.2f}%</code>
+▫️ 현재: <code>{nq_c:.2f}</code> | 고가: <code>{nq_h:.2f}</code> | 저가: <code>{nq_l:.2f}</code>
+▫️ 총 진폭: <code>{nq_amp:.2f}%</code> | 저점 대비 반등: <code>{nq_current_amp:.2f}%</code>
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
 📊 <b>현재가 & 5MA(어제 진폭)</b>
 🐂 <b>SOXL</b> <code>${price_l:.2f}</code> | <code>{amp_l:.1f}%({yest_amp_l:.1f}%)</code>
