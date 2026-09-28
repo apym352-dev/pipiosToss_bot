@@ -25,6 +25,7 @@
 # NEW: 나스닥 100 선물지수(NQ=F) 실시간 관제 UI 렌더링 및 비동기 수집망 결속
 # MODIFIED: 관제탑 UI NQ=F 실시간 진폭(Amplitude) 연산 및 렌더링 결속
 # NEW: 관제탑 UI NQ=F 저가 대비 현재가 실시간 반등 진폭(nq_current_amp) 연산 및 2줄 분리 렌더링 결속
+# MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
 
 import os
 import html
@@ -170,9 +171,20 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     async def fetch_nq_futures():
         def _get_nq():
             tkr = yf.Ticker("NQ=F")
-            df = tkr.history(period="1d", interval="1m")
+            # MODIFIED: NQ=F 1d 자정 증발 왜곡 방어 및 45분 갭 기반 논리 세션 시프트 락온
+            df = tkr.history(period="5d", interval="1m")
             if df.empty: return 0.0, 0.0, 0.0
+            
+            df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
+            time_diffs = df.index.to_series().diff()
+            gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
+            
+            if not gaps.empty:
+                last_gap_time = gaps.index[-1]
+                df = df[df.index >= last_gap_time]
+                
             return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
+            
         try:
             return await asyncio.wait_for(asyncio.to_thread(_get_nq), timeout=5.0)
         except Exception:

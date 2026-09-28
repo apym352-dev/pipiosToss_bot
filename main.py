@@ -31,6 +31,7 @@
 # NEW: 무인 자동 깃허브 업데이트 폴링망(auto_update_loop) 백그라운드 결속 및 시스템 대기 시간대(17:00~03:59 EST) 하드 락온
 # NEW: 토스증권 API 통신망 일시 붕괴 복구 시 1회성 정상화 타전망(Silent Recovery 알림) 결속
 # NEW: 돌파 매수 타전 시 실시간 NQ=F 데이터(현재가, 총 진폭, 반등률) 비동기 수집 및 메시지 융합(Fallback 방어망 포함) 락온
+# MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
 
 import sys
 import os
@@ -216,8 +217,18 @@ async def macro_risk_monitor(bot: Bot, chat_id: int):
 
             def _get_nq():
                 tkr = yf.Ticker("NQ=F")
-                df = tkr.history(period="1d", interval="1m")
+                # MODIFIED: NQ=F 자정 증발 왜곡 방어 및 45분 갭 기반 논리 세션 시프트 락온
+                df = tkr.history(period="5d", interval="1m")
                 if df.empty: return 0.0, 0.0, 0.0
+                
+                df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
+                time_diffs = df.index.to_series().diff()
+                gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
+                
+                if not gaps.empty:
+                    last_gap_time = gaps.index[-1]
+                    df = df[df.index >= last_gap_time]
+                    
                 return float(df['High'].max()), float(df['Low'].min()), float(df['Close'].iloc[-1])
 
             try:
@@ -801,14 +812,23 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     
                                     idempotency_keys[symbol]["BUY"] = None
                                     
-                                    # NEW: 타전 직전 NQ=F 실시간 데이터 비동기 병합 수집 락온
+                                    # MODIFIED: NQ=F 자정 증발 왜곡 방어 및 논리 세션 시프트 락온
                                     nq_c, nq_h, nq_l = 0.0, 0.0, 0.0
                                     nq_amp, nq_current_amp = 0.0, 0.0
                                     
                                     def _get_nq_for_alert():
                                         tkr = yf.Ticker("NQ=F")
-                                        df = tkr.history(period="1d", interval="1m")
+                                        df = tkr.history(period="5d", interval="1m")
                                         if df.empty: return 0.0, 0.0, 0.0
+                                        
+                                        df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
+                                        time_diffs = df.index.to_series().diff()
+                                        gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
+                                        
+                                        if not gaps.empty:
+                                            last_gap_time = gaps.index[-1]
+                                            df = df[df.index >= last_gap_time]
+                                            
                                         return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
                                         
                                     try:
