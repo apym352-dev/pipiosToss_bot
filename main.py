@@ -30,6 +30,7 @@
 # MODIFIED: 매크로 위험(스퀴즈 및 진폭 한계) 롱 차단 기준을 1.5%에서 절대헌법 1.0%로 보수적 하향 락온 적용
 # NEW: 무인 자동 깃허브 업데이트 폴링망(auto_update_loop) 백그라운드 결속 및 시스템 대기 시간대(17:00~03:59 EST) 하드 락온
 # NEW: 토스증권 API 통신망 일시 붕괴 복구 시 1회성 정상화 타전망(Silent Recovery 알림) 결속
+# NEW: 돌파 매수 타전 시 실시간 NQ=F 데이터(현재가, 총 진폭, 반등률) 비동기 수집 및 메시지 융합(Fallback 방어망 포함) 락온
 
 import sys
 import os
@@ -619,7 +620,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         try:
                             await client.cancel_conditional_order(cond_order_id)
                             await AssassinLedger.save_state(symbol, cond_order_id="", target_sell_price=0.0)
-                            print(f"🛑 [수동 오버나이트 {symbol}] 가동 OFF 감지. 익절 조건주문({cond_order_id}) 파기 완료.", flush=True)
+                            print(f"🛑 [수동 오버나이트 {symbol}] 가 가동 OFF 감지. 익절 조건주문({cond_order_id}) 파기 완료.", flush=True)
                             await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫️ 조치: 기장전된 익절 조건주문 안전 파기 완료")
                             cond_order_id = ""
                             target_sell_price = 0.0
@@ -800,8 +801,42 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     
                                     idempotency_keys[symbol]["BUY"] = None
                                     
+                                    # NEW: 타전 직전 NQ=F 실시간 데이터 비동기 병합 수집 락온
+                                    nq_c, nq_h, nq_l = 0.0, 0.0, 0.0
+                                    nq_amp, nq_current_amp = 0.0, 0.0
+                                    
+                                    def _get_nq_for_alert():
+                                        tkr = yf.Ticker("NQ=F")
+                                        df = tkr.history(period="1d", interval="1m")
+                                        if df.empty: return 0.0, 0.0, 0.0
+                                        return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
+                                        
+                                    try:
+                                        nq_c, nq_h, nq_l = await asyncio.wait_for(asyncio.to_thread(_get_nq_for_alert), timeout=5.0)
+                                        if nq_l > 0.0:
+                                            nq_amp = ((nq_h - nq_l) / nq_l * 100.0)
+                                            nq_current_amp = ((nq_c - nq_l) / nq_l * 100.0)
+                                    except Exception as e:
+                                        print(f"🚨 [NQ=F 타전 융합 방어] {e}", flush=True)
+                                        
+                                    nq_alert_str = ""
+                                    if nq_c > 0.0 and nq_l > 0.0:
+                                        nq_alert_str = (
+                                            f"\n➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
+                                            f"🌐 <b>나스닥 100 선물 (NQ=F)</b>\n"
+                                            f"▫️ 현재: <code>{nq_c:.2f}</code> | 고가: <code>{nq_h:.2f}</code> | 저가: <code>{nq_l:.2f}</code>\n"
+                                            f"▫️ 총 진폭: <code>{nq_amp:.2f}%</code> | 저점 대비 반등: <code>{nq_current_amp:.2f}%</code>"
+                                        )
+                                    
                                     lock_msg = f"VWAP 연속 돌파 방어망 통과 ({required_ticks}틱)"
-                                    await notify_tg(f"🚀 <b>[aVWAP {symbol}] 단독 돌파 요격 매수 (세션: {hardcoded_session})</b>\n▫️ aVWAP: ${vwap_price:.2f}\n▫️ 타격가: ${ask_1_price:.2f}\n▫️ 수량: {target_qty}주\n▫️ 확증: {lock_msg}")
+                                    await notify_tg(
+                                        f"🚀 <b>[aVWAP {symbol}] 단독 돌파 요격 매수 (세션: {hardcoded_session})</b>\n"
+                                        f"▫️ aVWAP: ${vwap_price:.2f}\n"
+                                        f"▫️ 타격가: ${ask_1_price:.2f}\n"
+                                        f"▫️ 수량: {target_qty}주\n"
+                                        f"▫️ 확증: {lock_msg}"
+                                        f"{nq_alert_str}"
+                                    )
                         except Exception as e:
                             print(f"🚨 [BUY 방어] {e}", flush=True)
                             await notify_tg(f"🚨 <b>[BUY 에러 {symbol}]</b> {html.escape(str(e))}")
