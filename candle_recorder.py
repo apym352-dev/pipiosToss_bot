@@ -2,6 +2,8 @@
 # FILE: candle_recorder.py
 # 목적: 듀얼 암살자 1분봉 원자적 데이터 영구 누적 파이프라인 (비동기 I/O 격리)
 # =====================================================================
+# MODIFIED: 스냅샷 I/O 폭증 방어를 위한 전체 덮어쓰기(Overwrite) 소각 및 순수 덧붙이기(Append-Only) 아키텍처 락온
+# MODIFIED: 기존 원장 전체 로딩 병목 소각 및 timestamp 단일 컬럼 추출 기반 델타(Delta) 캔들 필터링 결속
 
 import os
 import asyncio
@@ -14,21 +16,41 @@ from toss_api import TossApiClient, GlobalThrottle
 
 RAW_DATA_DIR = "/home/pipiosToss/raw_data"
 
-def _sync_upsert_csv(filepath: str, new_df: pd.DataFrame):
+def _sync_append_csv(filepath: str, new_df: pd.DataFrame):
+    """
+    NEW: 디스크 I/O 폭증 방어용 Append-Only 파이프라인.
+    전체 파일을 읽고 덮어쓰는 대신, 파일의 타임스탬프만 읽어 최신 데이터만 파일 끝에 덧붙입니다.
+    """
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    if os.path.exists(filepath):
+    
+    if new_df.empty:
+        return
+
+    file_exists = os.path.exists(filepath)
+    
+    if file_exists:
         try:
-            existing_df = pd.read_csv(filepath)
-            existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'], utc=True).dt.tz_convert(ZoneInfo('America/New_York'))
-            combined = pd.concat([existing_df, new_df], ignore_index=True)
+            # 읽기(Read) I/O 최소화를 위해 timestamp 컬럼만 추출하여 마지막 캔들 시각 추적
+            existing_ts = pd.read_csv(filepath, usecols=['timestamp'])
+            existing_ts['timestamp'] = pd.to_datetime(existing_ts['timestamp'], utc=True).dt.tz_convert(ZoneInfo('America/New_York'))
+            last_ts = existing_ts['timestamp'].max()
+            
+            if pd.notna(last_ts):
+                # 기존 마지막 캔들 시각보다 나중에 발생한 '순수 신규 캔들'만 필터링 (델타 추출)
+                append_df = new_df[new_df['timestamp'] > last_ts].copy()
+            else:
+                append_df = new_df.copy()
         except Exception:
-            combined = new_df
+            # 파일이 손상되었거나 헤더가 다른 엣지 케이스 시 전체 백업
+            append_df = new_df.copy()
     else:
-        combined = new_df
+        append_df = new_df.copy()
         
-    combined.drop_duplicates(subset=['timestamp'], keep='last', inplace=True)
-    combined.sort_values(by='timestamp', inplace=True)
-    combined.to_csv(filepath, index=False, date_format='%Y-%m-%dT%H:%M:%S%z')
+    # 신규 캔들이 존재할 때만 디스크 쓰기(Write) I/O 격발
+    if not append_df.empty:
+        append_df.sort_values(by='timestamp', inplace=True)
+        # 전체 덮어쓰기가 아닌 모드 'a'(Append)로 파일 끝에 데이터만 주입하여 스냅샷 증분 폭증 원천 차단
+        append_df.to_csv(filepath, mode='a', header=not file_exists, index=False, date_format='%Y-%m-%dT%H:%M:%S%z')
 
 def _sync_partition_candles(symbol: str, candles_list: list) -> dict:
     if not candles_list:
@@ -80,7 +102,7 @@ async def record_candles_loop(client: TossApiClient, symbol: str):
                 for filename, group_df in partitions.items():
                     filepath = os.path.join(RAW_DATA_DIR, filename)
                     async with GlobalThrottle.get_file_lock(filepath):
-                        await asyncio.to_thread(_sync_upsert_csv, filepath, group_df)
+                        await asyncio.to_thread(_sync_append_csv, filepath, group_df)
                         
         except Exception as e:
             print(f"🚨 [Candle Recorder {symbol}] 수집망 붕괴 방어: {e}", flush=True)
