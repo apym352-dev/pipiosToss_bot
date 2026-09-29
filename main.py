@@ -30,6 +30,7 @@
 # NEW: 토스증권 API 통신망 일시 붕괴 복구 시 1회성 정상화 타전망(Silent Recovery 알림) 결속
 # NEW: 돌파 매수 타전 시 실시간 NQ=F 데이터(현재가, 총 진폭, 반등률) 비동기 수집 및 메시지 융합(Fallback 방어망 포함) 락온
 # MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
+# NEW: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 순수 체결가 대신 토스증권 장부상 팩트 매수단가(averagePurchasePrice) 최우선 락온 결속
 
 import sys
 import os
@@ -566,7 +567,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 await AssassinLedger.save_state(symbol, cond_order_id="", target_sell_price=0.0)
                                 cond_order_id = ""
                                 target_sell_price = 0.0
-                                await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫️ 조치: 로컬 덫 장부 초기화 완료 (서버단 이미 증발)")
+                                await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫️️ 조치: 로컬 덫 장부 초기화 완료 (서버단 이미 증발)")
                             print(f"🚨 [수동 OFF 덫 파기 방어 {symbol}] {e}", flush=True)
                         finally:
                             in_memory_ordering_lock[symbol] = False
@@ -591,7 +592,9 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
             if holdings_qty > 0 and not has_open_sell and not has_open_buy and not cond_order_id and not in_memory_ordering_lock[symbol] and is_active:
                 calculated_target = target_sell_price
                 trap_qty = holdings_qty
-                avg_price = last_buy_price
+                
+                # MODIFIED: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 순수 체결가 대신 토스증권 장부상 팩트 평단가 최우선 락온
+                avg_price = float(holdings_detail.get('avg_price', 0.0))
                 is_rearm = True
                 trap_tag = "" 
                 
@@ -605,17 +608,20 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 filled_qty = int(math.floor(float(order_detail.get("execution", {}).get("filledQuantity", 0.0))))
                                 exec_price = float(order_detail.get("execution", {}).get("averageFilledPrice", 0.0))
                                 
-                                if filled_qty > 0 and exec_price > 0.0:
+                                if filled_qty > 0:
                                     trap_qty = min(holdings_qty, filled_qty)
-                                    avg_price = exec_price
+                                    # 2순위: 팩트 평단가가 시스템상 지연 누락된 찰나에만 순수 체결가로 폴백
+                                    if avg_price <= 0.0 and exec_price > 0.0:
+                                        avg_price = exec_price
                                     is_rearm = False
                         except Exception:
                             pass
                     else:
                         is_rearm = False
 
+                    # 3순위: 그래도 0.0일 경우 이전 장부 기록으로 최후 폴백
                     if avg_price <= 0.0:
-                        avg_price = float(holdings_detail.get('avg_price', 0.0))
+                        avg_price = last_buy_price
 
                     if avg_price > 0.0:
                         calculated_target = math.ceil(avg_price * 1.01 * 100) / 100.0
