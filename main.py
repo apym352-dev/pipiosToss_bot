@@ -25,9 +25,7 @@
 # NEW: 수동 진입 상태에서 자동매매 동시 진입 충돌을 완벽 차단하기 위한 3단계 배타적 절대 락온(Global Shared Holdings + Probing) 결속
 # MODIFIED: 수동 개입(잔고 존재, buy_order_id 부재) 식별 시 is_rearm = False 강제 주입으로 세션 락(is_session_done) 및 평단가 장부 기록 정상화
 # MODIFIED: 잔고 보유 중(수동/자동) 추가 진입 원천 차단을 위한 매수 요격 조건식(holdings_qty == 0) 하드 락온
-# NEW: 초과 Case 58 - 매크로 위험(스퀴즈 및 진폭 한계) 감지 전용 백그라운드 모니터(macro_risk_monitor) 결속 및 yfinance NQ=F 연동
-# MODIFIED: 초과 Case 58 - 매크로 위험 감지 시 강제 퇴근 사유 명문화 및 비대칭 수동 진입 권고 타전망 결속 (숏 금지 로직 최저가 도달 시 무조건 격발)
-# MODIFIED: 매크로 위험(스퀴즈 및 진폭 한계) 롱 차단 기준을 1.5%에서 절대헌법 1.0%로 보수적 하향 락온 적용
+# REMOVED: 매크로 위험 감지망(스퀴즈 및 진폭 한계) 100% 소각 및 순수 aVWAP 추세 추종 모드로 복귀 락온
 # NEW: 무인 자동 깃허브 업데이트 폴링망(auto_update_loop) 백그라운드 결속 및 시스템 대기 시간대(17:00~03:59 EST) 하드 락온
 # NEW: 토스증권 API 통신망 일시 붕괴 복구 시 1회성 정상화 타전망(Silent Recovery 알림) 결속
 # NEW: 돌파 매수 타전 시 실시간 NQ=F 데이터(현재가, 총 진폭, 반등률) 비동기 수집 및 메시지 융합(Fallback 방어망 포함) 락온
@@ -199,80 +197,6 @@ async def auto_update_loop(bot: Bot, chat_id: int):
             print(f"🚨 [무인 업데이트망 붕괴 방어] {e}", flush=True)
             
         await asyncio.sleep(3600.0)
-
-async def macro_risk_monitor(bot: Bot, chat_id: int):
-    while True:
-        try:
-            now_est = datetime.now(ZoneInfo('America/New_York'))
-            if now_est.hour >= 19 or now_est.hour < 4:
-                await asyncio.sleep(60.0)
-                continue
-
-            state_l = await AssassinLedger.get_state("SOXL")
-            state_s = await AssassinLedger.get_state("SOXS")
-            
-            if state_l[3] and state_s[3]: 
-                await asyncio.sleep(60.0)
-                continue
-
-            def _get_nq():
-                tkr = yf.Ticker("NQ=F")
-                # MODIFIED: NQ=F 자정 증발 왜곡 방어 및 45분 갭 기반 논리 세션 시프트 락온
-                df = tkr.history(period="5d", interval="1m")
-                if df.empty: return 0.0, 0.0, 0.0
-                
-                df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
-                time_diffs = df.index.to_series().diff()
-                gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
-                
-                if not gaps.empty:
-                    last_gap_time = gaps.index[-1]
-                    df = df[df.index >= last_gap_time]
-                    
-                return float(df['High'].max()), float(df['Low'].min()), float(df['Close'].iloc[-1])
-
-            try:
-                h, l, c = await asyncio.wait_for(asyncio.to_thread(_get_nq), timeout=10.0)
-            except Exception as e:
-                print(f"🚨 [yfinance NQ=F 통신 방어] {e}", flush=True)
-                h, l, c = 0.0, 0.0, 0.0
-
-            if h > 0 and l > 0 and c > 0 and h > l:
-                daily_amp = (h - l) / l * 100.0
-                
-                # MODIFIED: 1.5 -> 1.0 절대헌법에 따른 잔여 체력 임계값 하향 락온
-                long_exhausted = ((c * 1.002 - l) / l * 100.0) > 1.0
-                short_exhausted = (daily_amp > 0.3) and (((c - l) / l * 100.0) <= 0.1)
-
-                if long_exhausted or short_exhausted:
-                    await AssassinLedger.save_state("SOXL", is_session_done=True, entry_session="MACRO_BLOCKED")
-                    await AssassinLedger.save_state("SOXS", is_session_done=True, entry_session="MACRO_BLOCKED")
-                    
-                    if long_exhausted and short_exhausted:
-                        reason_msg = "▫️ 사유: NQ=F 상/하방 진폭 체력이 모두 한계치에 도달함 (극심한 방향성 상실)\n▫️ 권고: 방향성 확립 시까지 <b>전면 관망</b>을 유지하십시오."
-                    elif long_exhausted:
-                        # MODIFIED: 1.5% -> 1.0% 타전 팩트 동기화 락온
-                        reason_msg = "▫️ 사유: NQ=F 최고가 부근 도달 및 롱(SOXL) 1% 익절을 위한 추가 상승 체력(1.0% 한계) 100% 고갈\n▫️ 권고: <b>숏(SOXS)에 수동으로 진입하세요.</b>"
-                    elif short_exhausted:
-                        reason_msg = "▫️ 사유: NQ=F 현재 지수가 당일 최저가(저점) 부근에 도달함 (대세 상승 반전 위험)\n▫️ 권고: <b>롱(SOXL)에 수동으로 진입 하세요.</b>"
-
-                    try:
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text="🚨 <b>[매크로 위험 감지] 금일 암살자 자동 진입 전면 차단 및 강제 퇴근 처리</b>\n"
-                                 f"{reason_msg}\n"
-                                 f"▫️ 현재 지수: {c:.2f} (고가: {h:.2f} / 저가: {l:.2f})\n"
-                                 "▫️ 조치: SOXL/SOXS 양방향 신규 진입 권한 100% 영구 소각",
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
-                    print(f"🛑 [매크로 위험 감지] NQ=F 한계 도달. 롱 차단 조건: {long_exhausted}, 숏 차단 조건: {short_exhausted}. 양방향 퇴근 락온 완료.", flush=True)
-
-        except Exception as e:
-            print(f"🚨 [매크로 모니터망 붕괴 방어] {e}", flush=True)
-
-        await asyncio.sleep(60.0)
 
 async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: str):
     global last_holiday_notified_date
@@ -884,7 +808,6 @@ async def main():
     dp.include_router(router)
     
     asyncio.create_task(api_client.token_renewal_loop())
-    asyncio.create_task(macro_risk_monitor(bot, ADMIN_CHAT_ID))
     asyncio.create_task(auto_update_loop(bot, ADMIN_CHAT_ID))
     asyncio.create_task(assassin_loop(api_client, bot, ADMIN_CHAT_ID, "SOXL"))
     asyncio.create_task(assassin_loop(api_client, bot, ADMIN_CHAT_ID, "SOXS"))

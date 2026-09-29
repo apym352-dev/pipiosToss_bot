@@ -21,7 +21,7 @@
 # MODIFIED: 초과 Case 60 - 통합 지시서 전일 종가(prev_close) 동적 캘린더 추출 방어망 주입
 # MODIFIED: 초과 Case 61 - 데이장(19:00 EST 이후) 1d 캔들 롤오버 시 실시간 미완성 캔들 오염(어제 진폭 휩소) 완벽 방어를 위한 3단 동적 시프트 락온
 # MODIFIED: Case 13 - 04:06 EST 절대 타임쉴드 구간 '절대쉴드' UI 렌더링 락온 결속
-# NEW: 초과 Case 58 - 관제탑 UI MACRO_BLOCKED 감지 시 '🛑 강제퇴근' 원자적 렌더링 결속
+# REMOVED: 매크로 위험 감지망 전면 소각에 따른 MACRO_BLOCKED 분기 렌더링 영구 소각
 # NEW: 나스닥 100 선물지수(NQ=F) 실시간 관제 UI 렌더링 및 비동기 수집망 결속
 # MODIFIED: 관제탑 UI NQ=F 실시간 진폭(Amplitude) 연산 및 렌더링 결속
 # NEW: 관제탑 UI NQ=F 저가 대비 현재가 실시간 반등 진폭(nq_current_amp) 연산 및 2줄 분리 렌더링 결속
@@ -325,10 +325,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
         elif qty > 0:
             state_text = "보유(+1.0%)"
         elif is_done:
-            if entry_session == "MACRO_BLOCKED":
-                state_text = "🛑 강제퇴근"
-            else:
-                state_text = "타격완료"
+            state_text = "타격완료"
         else:
             if current_session == "preMarket":
                 import time
