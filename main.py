@@ -31,6 +31,7 @@
 # NEW: 돌파 매수 타전 시 실시간 NQ=F 데이터(현재가, 총 진폭, 반등률) 비동기 수집 및 메시지 융합(Fallback 방어망 포함) 락온
 # MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
 # NEW: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 순수 체결가 대신 토스증권 장부상 팩트 매수단가(averagePurchasePrice) 최우선 락온 결속
+# NEW: 초과 Case 65 - 매수 요격 전 USD Buying Power 원자적 프로빙 및 예산 동적 안전화(0.5% 버퍼) 락온 결속 (달러 부족 422 에러 원천 봉쇄)
 
 import sys
 import os
@@ -567,7 +568,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 await AssassinLedger.save_state(symbol, cond_order_id="", target_sell_price=0.0)
                                 cond_order_id = ""
                                 target_sell_price = 0.0
-                                await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫️️ 조치: 로컬 덫 장부 초기화 완료 (서버단 이미 증발)")
+                                await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫ 조치: 로컬 덫 장부 초기화 완료 (서버단 이미 증발)")
                             print(f"🚨 [수동 OFF 덫 파기 방어 {symbol}] {e}", flush=True)
                         finally:
                             in_memory_ordering_lock[symbol] = False
@@ -593,7 +594,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                 calculated_target = target_sell_price
                 trap_qty = holdings_qty
                 
-                # MODIFIED: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 순수 체결가 대신 토스증권 장부상 팩트 평단가 최우선 락온
                 avg_price = float(holdings_detail.get('avg_price', 0.0))
                 is_rearm = True
                 trap_tag = "" 
@@ -610,7 +610,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 
                                 if filled_qty > 0:
                                     trap_qty = min(holdings_qty, filled_qty)
-                                    # 2순위: 팩트 평단가가 시스템상 지연 누락된 찰나에만 순수 체결가로 폴백
                                     if avg_price <= 0.0 and exec_price > 0.0:
                                         avg_price = exec_price
                                     is_rearm = False
@@ -619,7 +618,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     else:
                         is_rearm = False
 
-                    # 3순위: 그래도 0.0일 경우 이전 장부 기록으로 최후 폴백
                     if avg_price <= 0.0:
                         avg_price = last_buy_price
 
@@ -653,7 +651,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 is_session_done = True
                             else:
                                 await AssassinLedger.save_state(symbol, price=avg_price, target_sell_price=calculated_target, cond_order_id=new_cond_id)
-                            await notify_tg(f"🟢 <b>[aVWAP {symbol}] {trap_tag} 기계적 조건주문 덫 장전</b>\n▫️ 팩트 평단가: ${avg_price:.2f}\n▫️ 익절 덫: ${calculated_target:.2f}\n▫️ 수량: {trap_qty}주")
+                            await notify_tg(f"🟢 <b>[aVWAP {symbol}] {trap_tag} 기계적 조건주문 덫 장전</b>\n▫️️ 팩트 평단가: ${avg_price:.2f}\n▫️ 익절 덫: ${calculated_target:.2f}\n▫️ 수량: {trap_qty}주")
                         else:
                             await AssassinLedger.save_state(symbol, cond_order_id=new_cond_id)
                             await notify_tg(f"🟢 <b>[aVWAP {symbol}] 포지션 조건주문 덫 재장전</b>\n▫️ 유지 평단가: ${avg_price:.2f}\n▫️ 익절 덫: ${calculated_target:.2f}\n▫️ 수량: {trap_qty}주")
@@ -721,7 +719,16 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 ask_1_price = current_price
                                 
                             if ask_1_price > 0.0:
-                                target_qty = int(math.floor(budget / ask_1_price))
+                                # NEW: 매수 요격 전 USD Buying Power 원자적 프로빙 및 예산 동적 안전화(0.5% 버퍼) 락온 결속
+                                try:
+                                    current_bp = await client.get_usd_buying_power()
+                                    safe_bp = current_bp * 0.995
+                                    actual_budget = min(budget, safe_bp)
+                                except Exception as e:
+                                    print(f"🚨 [Buying Power 검증 방어] {e}", flush=True)
+                                    actual_budget = budget
+
+                                target_qty = int(math.floor(actual_budget / ask_1_price))
                                 
                                 if target_qty > 0:
                                     client_id = idempotency_keys[symbol]["BUY"]
@@ -742,7 +749,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     
                                     idempotency_keys[symbol]["BUY"] = None
                                     
-                                    # MODIFIED: NQ=F 자정 증발 왜곡 방어 및 논리 세션 시프트 락온
                                     nq_c, nq_h, nq_l = 0.0, 0.0, 0.0
                                     nq_amp, nq_current_amp = 0.0, 0.0
                                     
