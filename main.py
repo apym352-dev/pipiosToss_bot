@@ -9,7 +9,7 @@
 # MODIFIED: 초과 Case 47 - 숏 스퀴즈 1차 트리거 발동 최저가(min_price) 및 포착 현재가(current_price) 텔레그램 타전망 증축
 # NEW: 암살자 OFF 상태(수동 오버나이트) 중 수동 청산 시 침묵(Silent) 해제 및 텔레그램 타전망 분기 결속
 # MODIFIED: 초과 Case 47 - 숏 스퀴즈 가격 민감도 0.1% 하향 및 거래량 5배 상향 락온
-# NEW: 초과 Case 47 - 세션 전이 거래량 왜곡 방어용 5분 타임쉴드 주입 (04:00~04:04, 09:30~09:34)
+# NEW: 초과 Case 47 - 세션 전이 거래량 왜곡 방어용 5분 타임쉴 주입 (04:00~04:04, 09:30~09:34)
 # MODIFIED: 초과 Case 51 - 암살자 신규 매수 전용 동적 타임쉴드 04:30 EST(30분) 연장 및 60초(40틱) 연속 상회 확증 알고리즘 주입
 # NEW: 초과 Case 52 - 잔고 0주(퇴근) 확증 시 토스증권 API 호출을 통한 손익(PnL) 데이터 동적 추출 및 타전망 결속
 # NEW: 수동 매수(개입) 원자적 식별 및 1.0% 타점 하드 락온. 수동 덫 장전 즉시 당일 자동 매수 권한 100% 영구 소각(Mutex).
@@ -33,7 +33,8 @@
 # NEW: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 순수 체결가 대신 토스증권 장부상 팩트 매수단가(averagePurchasePrice) 최우선 락온 결속
 # NEW: 초과 Case 65 - 매수 요격 전 USD Buying Power 원자적 프로빙 및 예산 동적 안전화(0.5% 버퍼) 락온 결속 (달러 부족 422 에러 원천 봉쇄)
 # MODIFIED: 매수 진입 시 호가창 조회(get_orderbook) 병목 소각 및 슬리피지 방어를 위한 현재가(current_price) 지정가(LIMIT) 하드 락온
-# NEW: 10틱(15초) 미체결 매수 주문 즉각 취소 및 현재가 갱신 재조준 사격 로직 하드 락온 결속
+# MODIFIED: 초과 Case 60 - 40틱(60초) 미체결 매수 주문 즉각 취소 및 현재가 갱신 재조준 사격 로직 하드 락온 결속
+# NEW: 배타적 단독 진입망 교차 검증 및 장부 자동 동기화(Mutex Sync) 파이프라인 결속을 통한 'PRE대기' 오표출 영구 소각 및 퇴근 락온
 
 import sys
 import os
@@ -535,17 +536,34 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         finally:
                             in_memory_ordering_lock[symbol] = False
 
-            # NEW: 10틱(15초) 경과 미체결 지정가 매수 주문 즉각 취소 및 현재가 재조준 사격 방어망 결속
+            # NEW: 배타적 단독 진입망 교차 검증 및 장부 자동 동기화 (Mutex Sync)
+            # 사유: 선행 종목 진입 후 반대 종목이 'PRE대기'로 오표출되는 현상 방어 및 퇴근(진입차단) 상태 하드 락온
+            if not is_session_done:
+                other_symbol_for_sync = "SOXS" if symbol == "SOXL" else "SOXL"
+                other_state = await AssassinLedger.get_state(other_symbol_for_sync)
+                other_session_id = other_state[2]
+                other_is_done_sync = other_state[3]
+                other_buy_id_sync = await AssassinLedger.get_buy_order_id(other_symbol_for_sync)
+                other_qty_sync = shared_holdings.get(other_symbol_for_sync, 0)
+                
+                is_other_active_today = (other_qty_sync > 0) or (current_session_id == other_session_id and (other_is_done_sync or other_buy_id_sync))
+                
+                if is_other_active_today:
+                    await AssassinLedger.save_state(symbol, is_session_done=True)
+                    is_session_done = True
+                    print(f"🔒 [Mutex Sync {symbol}] 반대 종목({other_symbol_for_sync}) 진입/퇴근 확증. 당일 신규 매수 권한 영구 소각(퇴근) 완료.", flush=True)
+
+            # MODIFIED: 초과 Case 60 - 40틱(60초) 경과 미체결 지정가 매수 주문 즉각 취소 및 현재가 재조준 사격 방어망 결속
             if holdings_qty == 0 and buy_order_id and not is_session_done and is_active:
                 current_time_for_retry = time.time()
-                if entry_time > 0 and (current_time_for_retry - entry_time) >= 15.0:
+                if entry_time > 0 and (current_time_for_retry - entry_time) >= 60.0:
                     if not in_memory_ordering_lock[symbol]:
                         in_memory_ordering_lock[symbol] = True
                         try:
                             od = await client.get_order_detail(buy_order_id)
                             st = od.get("status", "")
                             if st == "PENDING":
-                                print(f"🔄 [매수 재조준 {symbol}] 15초(10틱) 경과 순수 미체결 감지. 기존 주문 파기 및 현재가 갱신 격발.", flush=True)
+                                print(f"🔄 [매수 재조준 {symbol}] 60초(40틱) 경과 순수 미체결 감지. 기존 주문 파기 및 현재가 갱신 격발.", flush=True)
                                 await client.cancel_order(buy_order_id)
                                 await asyncio.sleep(0.5)
                                 
@@ -567,8 +585,8 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                             new_buy_id = str(res["result"]["orderId"])
                                             await AssassinLedger.save_state(symbol, buy_order_id=new_buy_id, entry_time=time.time())
                                             await notify_tg(
-                                                f"🔄 <b>[aVWAP {symbol}] 매수 주문 10틱 지연 재조준 격발</b>\n"
-                                                f"▫️ 사유: 지정가 주문 15초 이상 미체결 상태 감지\n"
+                                                f"🔄 <b>[aVWAP {symbol}] 매수 주문 40틱 지연 재조준 격발</b>\n"
+                                                f"▫️ 사유: 지정가 주문 60초 이상 미체결 상태 감지\n"
                                                 f"▫️ 조치: 기존 주문 원자적 취소 및 팩트 현재가 갱신\n"
                                                 f"▫️ 신규 타격가: ${new_price:.2f} ({new_target_qty}주)"
                                             )
@@ -616,7 +634,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         finally:
                             in_memory_ordering_lock[symbol] = False
                 elif just_turned_off:
-                    await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫️ 조치: 파기할 조건주문 부재 확인. 시스템 대기 모드로 안전 전환 완료")
+                    await notify_tg(f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫ 조치: 파기할 조건주문 부재 확인. 시스템 대기 모드로 안전 전환 완료")
             
             if holdings_qty > 0 and cond_order_id and is_active:
                 try:
@@ -753,7 +771,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 print(f"🚨 [듀얼 절대 쉴드 락온] {symbol} 돌파 확증되었으나 반대 종목({other_symbol_for_lock}) 수동/자동 잔고 포착! 요격 원천 차단.", flush=True)
                                 continue
 
-                            # MODIFIED: 호가창 조회(get_orderbook) 통신 병목을 소각하고 체결 팩트인 현재가(current_price)를 직접 타겟 지정가로 하드 락온
                             target_price = current_price
                                 
                             if target_price > 0.0:
