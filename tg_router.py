@@ -26,12 +26,12 @@
 # MODIFIED: 관제탑 UI NQ=F 실시간 진폭(Amplitude) 연산 및 렌더링 결속
 # NEW: 관제탑 UI NQ=F 저가 대비 현재가 실시간 반등 진폭(nq_current_amp) 연산 및 2줄 분리 렌더링 결속
 # MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
+# MODIFIED: 취약점 1 방어 - quant_engine.MacroDataCache 캐시 저장소 연동으로 NQ=F 다중 호출 방어 및 IP 밴 락온 결속
 
 import os
 import html
 import asyncio
 import pandas as pd
-import yfinance as yf
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Router, types, F
@@ -39,7 +39,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from quant_engine import AssassinLedger
+from quant_engine import AssassinLedger, MacroDataCache
 
 router = Router()
 api_client = None
@@ -168,28 +168,8 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     except Exception:
         pass
 
-    async def fetch_nq_futures():
-        def _get_nq():
-            tkr = yf.Ticker("NQ=F")
-            df = tkr.history(period="5d", interval="1m")
-            if df.empty: return 0.0, 0.0, 0.0
-            
-            df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
-            time_diffs = df.index.to_series().diff()
-            gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
-            
-            if not gaps.empty:
-                last_gap_time = gaps.index[-1]
-                df = df[df.index >= last_gap_time]
-                
-            return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
-            
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(_get_nq), timeout=5.0)
-        except Exception:
-            return 0.0, 0.0, 0.0
-
-    nq_c, nq_h, nq_l = await fetch_nq_futures()
+    # MODIFIED: 개별 fetch_nq_futures() 소각 및 MacroDataCache.get_cached_nq_data() 중앙 통제소 락온
+    nq_c, nq_h, nq_l = await MacroDataCache.get_cached_nq_data()
     
     nq_amp = ((nq_h - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
     nq_current_amp = ((nq_c - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0

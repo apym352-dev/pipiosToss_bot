@@ -36,6 +36,9 @@
 # MODIFIED: 초과 Case 60 - 40틱(60초) 지연 시 미체결/부분체결 매수 주문 즉각 취소 및 재조준 사격 로직 (holdings_qty 조건 해제 및 잔여 예산 동적 산출)
 # NEW: 배타적 단독 진입망 교차 검증 및 장부 자동 동기화(Mutex Sync) 파이프라인 결속을 통한 'PRE대기' 오표출 영구 소각 및 퇴근 락온
 # NEW: 초과 Case 66, 67, 68 - NQ=F 2.0% 진폭 초과 대세장 이탈 감지망 (매수 차단 및 손실권 시장가 덤핑 파이프라인 결속)
+# MODIFIED: 취약점 1 방어 - quant_engine.MacroDataCache 중앙 캐시 저장소 연동으로 NQ=F IP 밴 완벽 차단 결속
+# MODIFIED: 취약점 2 방어 - 60초 미체결 매수 취소 후 잔고를 원자적으로 프로빙하여 정확한 잔여 예산(remaining_budget) 동적 산출
+# MODIFIED: 취약점 3 방어 - 덫 생존 판별망에 ORDERING, ORDERED 상태 추가하여 허위 수동 익절(False Positive) 원천 차단
 
 import sys
 import os
@@ -54,7 +57,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
 from toss_api import TossApiClient
-from quant_engine import AssassinLedger, AVWAPEngine
+from quant_engine import AssassinLedger, AVWAPEngine, MacroDataCache
 from tg_router import router, inject_dependencies
 from candle_recorder import record_candles_loop
 
@@ -101,34 +104,6 @@ idempotency_keys = {
 
 holiday_notify_lock = asyncio.Lock()
 last_holiday_notified_date = ""
-
-# NEW: NQ=F 60초 TTL 인메모리 캐싱 파이프라인 구축 (IP 밴 및 통신 병목 원천 봉쇄)
-_nq_cache_data = (0.0, 0.0, 0.0, 0.0) # (current, high, low, timestamp)
-_nq_cache_lock = asyncio.Lock()
-
-async def get_cached_nq_data():
-    global _nq_cache_data
-    async with _nq_cache_lock:
-        now = time.time()
-        if now - _nq_cache_data[3] > 60.0:
-            def _fetch():
-                tkr = yf.Ticker("NQ=F")
-                df = tkr.history(period="5d", interval="1m")
-                if df.empty: return 0.0, 0.0, 0.0
-                df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
-                time_diffs = df.index.to_series().diff()
-                gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
-                if not gaps.empty:
-                    last_gap_time = gaps.index[-1]
-                    df = df[df.index >= last_gap_time]
-                return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
-            try:
-                c, h, l = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=5.0)
-                if l > 0.0:
-                    _nq_cache_data = (c, h, l, now)
-            except Exception as e:
-                print(f"🚨 [NQ=F 캐시 갱신 방어] {e}", flush=True)
-        return _nq_cache_data[0], _nq_cache_data[1], _nq_cache_data[2]
 
 async def fetch_full_session_candles(client: TossApiClient, symbol: str, session_start_est: datetime) -> list:
     all_candles = []
@@ -196,15 +171,10 @@ def _run_git_update_sync() -> tuple[bool, str]:
     return True, f"업데이트 성공:\n{reset_out}"
 
 async def auto_update_loop(bot: Bot, chat_id: int):
-    """
-    무인 자동 깃허브 업데이트 폴링 루프.
-    장마감 이후(17:00 EST ~ 03:59 EST)에만 가동되며 1시간 간격으로 origin/main을 스캔.
-    """
     while True:
         try:
             now_est = datetime.now(ZoneInfo('America/New_York'))
             
-            # 장중(04:00 ~ 16:59 EST)에는 자동 업데이트 전면 차단
             if 4 <= now_est.hour < 17:
                 await asyncio.sleep(3600.0)
                 continue
@@ -538,7 +508,8 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                             if cond_order_id:
                                 try:
                                     cond_detail = await client.get_conditional_order_detail(cond_order_id)
-                                    if cond_detail.get("status") in ["WATCHING", "PAUSED"]:
+                                    # MODIFIED: 조건주문 생존 판별 상태에 ORDERING, ORDERED 추가 결속 (허위 익절 방어)
+                                    if cond_detail.get("status") in ["WATCHING", "PAUSED", "ORDERING", "ORDERED"]:
                                         is_trap_survived = True
                                     await client.cancel_conditional_order(cond_order_id)
                                     print(f"🧹 [고아 덫 파기 {symbol}] 잔고 0주 연동. 서버단 조건주문({cond_order_id}) 파기 완료.", flush=True)
@@ -565,9 +536,8 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         finally:
                             in_memory_ordering_lock[symbol] = False
 
-            # NEW: 초과 Case 66, 67, 68 - NQ=F 2.0% 진폭 초과 대세장 이탈 감지 및 손실권 방어 덤핑
             if holdings_qty > 0 and is_active and not in_memory_ordering_lock[symbol]:
-                nq_c_dump, nq_h_dump, nq_l_dump = await get_cached_nq_data()
+                nq_c_dump, nq_h_dump, nq_l_dump = await MacroDataCache.get_cached_nq_data()
                 nq_amp_dump = ((nq_h_dump - nq_l_dump) / nq_l_dump * 100.0) if nq_l_dump > 0.0 else 0.0
                 
                 if nq_amp_dump >= 2.0:
@@ -625,7 +595,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     is_session_done = True
                     print(f"🔒 [Mutex Sync {symbol}] 반대 종목({other_symbol_for_sync}) 진입/퇴근 확증. 당일 신규 매수 권한 영구 소각(퇴근) 완료.", flush=True)
 
-            # MODIFIED: 초과 Case 60 - 40틱(60초) 지연 시 미체결/부분체결 매수 주문 즉각 취소 및 재조준 사격 로직 (holdings_qty 조건 해제 및 잔여 예산 동적 산출)
             if buy_order_id and not is_session_done and is_active:
                 current_time_for_retry = time.time()
                 if entry_time > 0 and (current_time_for_retry - entry_time) >= 60.0:
@@ -644,8 +613,12 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     current_bp = await client.get_usd_buying_power()
                                     safe_bp = current_bp * 0.995
                                     
-                                    avg_price_for_calc = float(holdings_detail.get('avg_price', 0.0))
-                                    spent_amount = holdings_qty * avg_price_for_calc
+                                    # MODIFIED: 60초 지연 재조준 시 최신 잔고 원자적 동기화 (Race Condition 방어)
+                                    holdings_detail_retry = await client.get_symbol_holdings_detail(symbol)
+                                    holdings_qty_retry = int(math.floor(holdings_detail_retry['qty']))
+                                    avg_price_for_calc = float(holdings_detail_retry.get('avg_price', 0.0))
+                                    
+                                    spent_amount = holdings_qty_retry * avg_price_for_calc
                                     remaining_budget = budget - spent_amount
                                     
                                     actual_budget = min(remaining_budget, safe_bp)
@@ -731,7 +704,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         await AssassinLedger.save_state(symbol, cond_order_id="")
                         cond_order_id = ""
             
-            # MODIFIED: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 잔량 분할(min) 소각 및 토스증권 장부상 전체 holdings_qty 및 팩트 평단가 최우선 락온
             if holdings_qty > 0 and not has_open_sell and not has_open_buy and not cond_order_id and not in_memory_ordering_lock[symbol] and is_active:
                 calculated_target = target_sell_price
                 trap_qty = holdings_qty
@@ -841,8 +813,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     if not in_memory_ordering_lock[symbol]:
                         in_memory_ordering_lock[symbol] = True
                         try:
-                            # NEW: 진입 요격 직전 NQ=F 2.0% 대세장 이탈 프로빙 및 진입 원천 차단
-                            nq_c_check, nq_h_check, nq_l_check = await get_cached_nq_data()
+                            nq_c_check, nq_h_check, nq_l_check = await MacroDataCache.get_cached_nq_data()
                             nq_amp_check = ((nq_h_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
                             
                             if nq_amp_check >= 2.0:

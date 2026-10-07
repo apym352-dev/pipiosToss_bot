@@ -5,14 +5,49 @@
 # MODIFIED: 초과 Case 44 - 오버나이트 로직 전면 소각 및 수동 통제 위임
 # MODIFIED: 3단 하향망 로직 전면 소각 (1.0% 고정 락온) 및 관련 플래그 증발
 # NEW: 초과 Case 55 - 듀얼 휩소 동시 진입 방어를 위한 180초 교차 타임쉴드 원자적 장부 필드(entry_time) 증축
+# NEW: 취약점 1 방어 - NQ=F 매크로 데이터 60초 TTL 인메모리 캐시 중앙 통제소(MacroDataCache) 신설
 
 import os
 import json
+import time
 import pandas as pd
+import yfinance as yf
 import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from toss_api import GlobalThrottle
+
+class MacroDataCache:
+    """
+    NEW: NQ=F 60초 TTL 인메모리 캐싱 파이프라인 중앙화.
+    main.py와 tg_router.py의 중복 API 호출을 방지하고 IP 밴 및 통신 병목을 원천 봉쇄합니다.
+    """
+    _nq_cache_data = (0.0, 0.0, 0.0, 0.0) # (current, high, low, timestamp)
+    _nq_cache_lock = asyncio.Lock()
+
+    @classmethod
+    async def get_cached_nq_data(cls):
+        async with cls._nq_cache_lock:
+            now = time.time()
+            if now - cls._nq_cache_data[3] > 60.0:
+                def _fetch():
+                    tkr = yf.Ticker("NQ=F")
+                    df = tkr.history(period="5d", interval="1m")
+                    if df.empty: return 0.0, 0.0, 0.0
+                    df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
+                    time_diffs = df.index.to_series().diff()
+                    gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
+                    if not gaps.empty:
+                        last_gap_time = gaps.index[-1]
+                        df = df[df.index >= last_gap_time]
+                    return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
+                try:
+                    c, h, l = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=5.0)
+                    if l > 0.0:
+                        cls._nq_cache_data = (c, h, l, now)
+                except Exception as e:
+                    print(f"🚨 [NQ=F 캐시 갱신 방어] {e}", flush=True)
+            return cls._nq_cache_data[0], cls._nq_cache_data[1], cls._nq_cache_data[2]
 
 class AssassinLedger:
     @classmethod
