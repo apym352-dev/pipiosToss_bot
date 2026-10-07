@@ -283,7 +283,6 @@ class TossApiClient:
         fallback_start = now_est
         fallback_end = now_est
 
-        # MODIFIED: 논리적 거래일 기반 요일 검증(월~금) 통합 및 단순화 락온
         if 0 <= logical_weekday <= 4:
             if est_time_int >= 1900 or est_time_int < 400:
                 is_fallback_open = True

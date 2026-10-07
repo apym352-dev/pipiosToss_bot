@@ -171,7 +171,6 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     async def fetch_nq_futures():
         def _get_nq():
             tkr = yf.Ticker("NQ=F")
-            # MODIFIED: NQ=F 1d 자정 증발 왜곡 방어 및 45분 갭 기반 논리 세션 시프트 락온
             df = tkr.history(period="5d", interval="1m")
             if df.empty: return 0.0, 0.0, 0.0
             
@@ -192,7 +191,6 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
 
     nq_c, nq_h, nq_l = await fetch_nq_futures()
     
-    # MODIFIED: NQ=F 총 진폭 연산 유지 및 현재가 반등 진폭 연산 추가 결속
     nq_amp = ((nq_h - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
     nq_current_amp = ((nq_c - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
 
@@ -352,7 +350,6 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     
     scan_time = now_est.strftime("%m-%d %H:%M:%S")
 
-    # MODIFIED: NQ=F UI 렌더링 2줄 분리 결속 (총 진폭 및 저점 대비 반등)
     text = f"""📡 <b>[aVWAP 레이더]</b> {market_header}
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
 🌐 <b>나스닥 100 선물 (NQ=F)</b>

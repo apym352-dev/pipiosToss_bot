@@ -30,26 +30,21 @@ def _sync_append_csv(filepath: str, new_df: pd.DataFrame):
     
     if file_exists:
         try:
-            # 읽기(Read) I/O 최소화를 위해 timestamp 컬럼만 추출하여 마지막 캔들 시각 추적
             existing_ts = pd.read_csv(filepath, usecols=['timestamp'])
             existing_ts['timestamp'] = pd.to_datetime(existing_ts['timestamp'], utc=True).dt.tz_convert(ZoneInfo('America/New_York'))
             last_ts = existing_ts['timestamp'].max()
             
             if pd.notna(last_ts):
-                # 기존 마지막 캔들 시각보다 나중에 발생한 '순수 신규 캔들'만 필터링 (델타 추출)
                 append_df = new_df[new_df['timestamp'] > last_ts].copy()
             else:
                 append_df = new_df.copy()
         except Exception:
-            # 파일이 손상되었거나 헤더가 다른 엣지 케이스 시 전체 백업
             append_df = new_df.copy()
     else:
         append_df = new_df.copy()
         
-    # 신규 캔들이 존재할 때만 디스크 쓰기(Write) I/O 격발
     if not append_df.empty:
         append_df.sort_values(by='timestamp', inplace=True)
-        # 전체 덮어쓰기가 아닌 모드 'a'(Append)로 파일 끝에 데이터만 주입하여 스냅샷 증분 폭증 원천 차단
         append_df.to_csv(filepath, mode='a', header=not file_exists, index=False, date_format='%Y-%m-%dT%H:%M:%S%z')
 
 def _sync_partition_candles(symbol: str, candles_list: list) -> dict:

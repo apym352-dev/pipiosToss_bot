@@ -35,6 +35,7 @@
 # MODIFIED: 매수 진입 시 호가창 조회(get_orderbook) 병목 소각 및 슬리피지 방어를 위한 현재가(current_price) 지정가(LIMIT) 하드 락온
 # MODIFIED: 초과 Case 60 - 40틱(60초) 미체결 매수 주문 즉각 취소 및 현재가 갱신 재조준 사격 로직 하드 락온 결속
 # NEW: 배타적 단독 진입망 교차 검증 및 장부 자동 동기화(Mutex Sync) 파이프라인 결속을 통한 'PRE대기' 오표출 영구 소각 및 퇴근 락온
+# NEW: 초과 Case 66, 67, 68 - NQ=F 2.0% 진폭 초과 대세장 이탈 감지망 (매수 차단 및 손실권 시장가 덤핑 파이프라인 결속)
 
 import sys
 import os
@@ -100,6 +101,34 @@ idempotency_keys = {
 
 holiday_notify_lock = asyncio.Lock()
 last_holiday_notified_date = ""
+
+# NEW: NQ=F 60초 TTL 인메모리 캐싱 파이프라인 구축 (IP 밴 및 통신 병목 원천 봉쇄)
+_nq_cache_data = (0.0, 0.0, 0.0, 0.0) # (current, high, low, timestamp)
+_nq_cache_lock = asyncio.Lock()
+
+async def get_cached_nq_data():
+    global _nq_cache_data
+    async with _nq_cache_lock:
+        now = time.time()
+        if now - _nq_cache_data[3] > 60.0:
+            def _fetch():
+                tkr = yf.Ticker("NQ=F")
+                df = tkr.history(period="5d", interval="1m")
+                if df.empty: return 0.0, 0.0, 0.0
+                df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
+                time_diffs = df.index.to_series().diff()
+                gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
+                if not gaps.empty:
+                    last_gap_time = gaps.index[-1]
+                    df = df[df.index >= last_gap_time]
+                return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
+            try:
+                c, h, l = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=5.0)
+                if l > 0.0:
+                    _nq_cache_data = (c, h, l, now)
+            except Exception as e:
+                print(f"🚨 [NQ=F 캐시 갱신 방어] {e}", flush=True)
+        return _nq_cache_data[0], _nq_cache_data[1], _nq_cache_data[2]
 
 async def fetch_full_session_candles(client: TossApiClient, symbol: str, session_start_est: datetime) -> list:
     all_candles = []
@@ -536,8 +565,51 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         finally:
                             in_memory_ordering_lock[symbol] = False
 
-            # NEW: 배타적 단독 진입망 교차 검증 및 장부 자동 동기화 (Mutex Sync)
-            # 사유: 선행 종목 진입 후 반대 종목이 'PRE대기'로 오표출되는 현상 방어 및 퇴근(진입차단) 상태 하드 락온
+            # NEW: 초과 Case 66, 67, 68 - NQ=F 2.0% 진폭 초과 대세장 이탈 감지 및 손실권 방어 덤핑
+            if holdings_qty > 0 and is_active and not in_memory_ordering_lock[symbol]:
+                nq_c_dump, nq_h_dump, nq_l_dump = await get_cached_nq_data()
+                nq_amp_dump = ((nq_h_dump - nq_l_dump) / nq_l_dump * 100.0) if nq_l_dump > 0.0 else 0.0
+                
+                if nq_amp_dump >= 2.0:
+                    avg_price_dump = float(holdings_detail.get('avg_price', 0.0))
+                    if avg_price_dump <= 0.0: 
+                        avg_price_dump = last_buy_price
+                    
+                    if avg_price_dump > 0.0 and current_price < avg_price_dump:
+                        in_memory_ordering_lock[symbol] = True
+                        try:
+                            if cond_order_id:
+                                await client.cancel_conditional_order(cond_order_id)
+                                await AssassinLedger.save_state(symbol, cond_order_id="", target_sell_price=0.0)
+                                cond_order_id = ""
+                                target_sell_price = 0.0
+                                await asyncio.sleep(0.5)
+                            
+                            orderbook = await client.get_orderbook(symbol)
+                            bids = orderbook.get("bids", [])
+                            bid_1_price = float(bids[0]["price"]) if bids and float(bids[0]["price"]) > 0.0 else current_price
+                            
+                            if bid_1_price > 0.0:
+                                client_id = f"M_DUMP_{symbol}_{now_est.strftime('%H%M%S_%f')}"[:36]
+                                await client.create_order(
+                                    symbol=symbol, side="SELL", order_type="LIMIT",
+                                    quantity=holdings_qty, price=f"{bid_1_price:.2f}",
+                                    client_order_id=client_id
+                                )
+                                await AssassinLedger.save_state(symbol, is_session_done=True)
+                                await notify_tg(
+                                    f"🚨 <b>[aVWAP {symbol}] 대세장 이탈 손실 덤핑 격발</b>\n"
+                                    f"▫️ 사유: NQ=F 진폭 <code>{nq_amp_dump:.2f}%</code> (2.0% 초과 확증)\n"
+                                    f"▫️ 손익 상태: 마이너스 (계좌 붕괴 위험)\n"
+                                    f"▫️ 조치: 1.0% 익절 덫 원자적 파기 및 전량 시장가(LIMIT) 덤핑 퇴근"
+                                )
+                                print(f"🚨 [매크로 손실 덤핑 {symbol}] NQ=F {nq_amp_dump:.2f}% 도달. 손실권 방어 전량 덤핑 발사 완료.", flush=True)
+                        except Exception as e:
+                            print(f"🚨 [매크로 덤핑 방어 {symbol}] {e}", flush=True)
+                        finally:
+                            in_memory_ordering_lock[symbol] = False
+                        continue
+
             if not is_session_done:
                 other_symbol_for_sync = "SOXS" if symbol == "SOXL" else "SOXL"
                 other_state = await AssassinLedger.get_state(other_symbol_for_sync)
@@ -553,7 +625,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     is_session_done = True
                     print(f"🔒 [Mutex Sync {symbol}] 반대 종목({other_symbol_for_sync}) 진입/퇴근 확증. 당일 신규 매수 권한 영구 소각(퇴근) 완료.", flush=True)
 
-            # MODIFIED: 초과 Case 60 - 40틱(60초) 경과 미체결 지정가 매수 주문 즉각 취소 및 현재가 재조준 사격 방어망 결속
             if holdings_qty == 0 and buy_order_id and not is_session_done and is_active:
                 current_time_for_retry = time.time()
                 if entry_time > 0 and (current_time_for_retry - entry_time) >= 60.0:
@@ -761,6 +832,21 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     if not in_memory_ordering_lock[symbol]:
                         in_memory_ordering_lock[symbol] = True
                         try:
+                            # NEW: 진입 요격 직전 NQ=F 2.0% 대세장 이탈 프로빙 및 진입 원천 차단
+                            nq_c_check, nq_h_check, nq_l_check = await get_cached_nq_data()
+                            nq_amp_check = ((nq_h_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
+                            
+                            if nq_amp_check >= 2.0:
+                                breakout_ticks = 0
+                                await AssassinLedger.save_state(symbol, is_session_done=True)
+                                print(f"🛑 [매크로 진입 차단 {symbol}] NQ=F 진폭 {nq_amp_check:.2f}% 도달. 당일 신규 매수 영구 소각.", flush=True)
+                                await notify_tg(
+                                    f"🛑 <b>[aVWAP {symbol}] 대세장 이탈 감지 (매수 차단)</b>\n"
+                                    f"▫️ 사유: NQ=F 실시간 진폭 <code>{nq_amp_check:.2f}%</code> (2.0% 초과 확증)\n"
+                                    f"▫️ 조치: 추세 붕괴 및 극심한 휩소 위험으로 돌파 요격 취소. 당일 신규 진입 권한 영구 소각 및 관망 퇴근"
+                                )
+                                continue
+
                             other_symbol_for_lock = "SOXS" if symbol == "SOXL" else "SOXL"
                             other_hold_check = await client.get_symbol_holdings_detail(other_symbol_for_lock)
                             other_hold_qty_check = int(math.floor(other_hold_check.get('qty', 0.0)))
@@ -803,39 +889,16 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     
                                     idempotency_keys[symbol]["BUY"] = None
                                     
-                                    nq_c, nq_h, nq_l = 0.0, 0.0, 0.0
-                                    nq_amp, nq_current_amp = 0.0, 0.0
-                                    
-                                    def _get_nq_for_alert():
-                                        tkr = yf.Ticker("NQ=F")
-                                        df = tkr.history(period="5d", interval="1m")
-                                        if df.empty: return 0.0, 0.0, 0.0
-                                        
-                                        df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
-                                        time_diffs = df.index.to_series().diff()
-                                        gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
-                                        
-                                        if not gaps.empty:
-                                            last_gap_time = gaps.index[-1]
-                                            df = df[df.index >= last_gap_time]
-                                            
-                                        return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
-                                        
-                                    try:
-                                        nq_c, nq_h, nq_l = await asyncio.wait_for(asyncio.to_thread(_get_nq_for_alert), timeout=5.0)
-                                        if nq_l > 0.0:
-                                            nq_amp = ((nq_h - nq_l) / nq_l * 100.0)
-                                            nq_current_amp = ((nq_c - nq_l) / nq_l * 100.0)
-                                    except Exception as e:
-                                        print(f"🚨 [NQ=F 타전 융합 방어] {e}", flush=True)
+                                    nq_current_amp = ((nq_c_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
                                         
                                     nq_alert_str = ""
-                                    if nq_c > 0.0 and nq_l > 0.0:
+                                    if nq_c_check > 0.0 and nq_l_check > 0.0:
                                         nq_alert_str = (
                                             f"\n➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
-                                            f"🌐 <b>나스닥 100 선물 (NQ=F)</b>\n"
-                                            f"▫️ 현재: <code>{nq_c:.2f}</code> | 고가: <code>{nq_h:.2f}</code> | 저가: <code>{nq_l:.2f}</code>\n"
-                                            f"▫️ 총 진폭: <code>{nq_amp:.2f}%</code> | 저점 대비 반등: <code>{nq_current_amp:.2f}%</code>"
+                                            f"🌐 <b>나스닥 100 선물 (NQ=F) 안전망 확인</b>\n"
+                                            f"▫️ 현재: <code>{nq_c_check:.2f}</code> | 고가: <code>{nq_h_check:.2f}</code> | 저가: <code>{nq_l_check:.2f}</code>\n"
+                                            f"▫️ 총 진폭: <code>{nq_amp_check:.2f}%</code> (2.0% 이하 안정권)\n"
+                                            f"▫️ 반등 진폭: <code>{nq_current_amp:.2f}%</code>"
                                         )
                                     
                                     lock_msg = f"VWAP 연속 돌파 방어망 통과 ({required_ticks}틱)"

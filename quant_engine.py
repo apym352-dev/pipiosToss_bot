@@ -89,7 +89,6 @@ class AssassinLedger:
                 if entry_session is not None: data["entry_session"] = entry_session
                 if entry_time is not None: data["entry_time"] = entry_time
                 
-                # 사용되지 않는 레거시 키 증발 처리
                 for obsolete_key in ["pre_first_flag", "force_downgrade", "force_downgrade_0_6", "is_stage_3"]:
                     data.pop(obsolete_key, None)
                 
