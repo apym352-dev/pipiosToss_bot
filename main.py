@@ -30,10 +30,10 @@
 # NEW: 토스증권 API 통신망 일시 붕괴 복구 시 1회성 정상화 타전망(Silent Recovery 알림) 결속
 # NEW: 돌파 매수 타전 시 실시간 NQ=F 데이터(현재가, 총 진폭, 반등률) 비동기 수집 및 메시지 융합(Fallback 방어망 포함) 락온
 # MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
-# NEW: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 순수 체결가 대신 토스증권 장부상 팩트 매수단가(averagePurchasePrice) 최우선 락온 결속
+# NEW: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 잔량 분할(min) 소각 및 토스증권 장부상 전체 holdings_qty 및 팩트 평단가 최우선 락온
 # NEW: 초과 Case 65 - 매수 요격 전 USD Buying Power 원자적 프로빙 및 예산 동적 안전화(0.5% 버퍼) 락온 결속 (달러 부족 422 에러 원천 봉쇄)
 # MODIFIED: 매수 진입 시 호가창 조회(get_orderbook) 병목 소각 및 슬리피지 방어를 위한 현재가(current_price) 지정가(LIMIT) 하드 락온
-# MODIFIED: 초과 Case 60 - 40틱(60초) 미체결 매수 주문 즉각 취소 및 현재가 갱신 재조준 사격 로직 하드 락온 결속
+# MODIFIED: 초과 Case 60 - 40틱(60초) 지연 시 미체결/부분체결 매수 주문 즉각 취소 및 재조준 사격 로직 (holdings_qty 조건 해제 및 잔여 예산 동적 산출)
 # NEW: 배타적 단독 진입망 교차 검증 및 장부 자동 동기화(Mutex Sync) 파이프라인 결속을 통한 'PRE대기' 오표출 영구 소각 및 퇴근 락온
 # NEW: 초과 Case 66, 67, 68 - NQ=F 2.0% 진폭 초과 대세장 이탈 감지망 (매수 차단 및 손실권 시장가 덤핑 파이프라인 결속)
 
@@ -625,7 +625,8 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     is_session_done = True
                     print(f"🔒 [Mutex Sync {symbol}] 반대 종목({other_symbol_for_sync}) 진입/퇴근 확증. 당일 신규 매수 권한 영구 소각(퇴근) 완료.", flush=True)
 
-            if holdings_qty == 0 and buy_order_id and not is_session_done and is_active:
+            # MODIFIED: 초과 Case 60 - 40틱(60초) 지연 시 미체결/부분체결 매수 주문 즉각 취소 및 재조준 사격 로직 (holdings_qty 조건 해제 및 잔여 예산 동적 산출)
+            if buy_order_id and not is_session_done and is_active:
                 current_time_for_retry = time.time()
                 if entry_time > 0 and (current_time_for_retry - entry_time) >= 60.0:
                     if not in_memory_ordering_lock[symbol]:
@@ -633,8 +634,8 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         try:
                             od = await client.get_order_detail(buy_order_id)
                             st = od.get("status", "")
-                            if st == "PENDING":
-                                print(f"🔄 [매수 재조준 {symbol}] 60초(40틱) 경과 순수 미체결 감지. 기존 주문 파기 및 현재가 갱신 격발.", flush=True)
+                            if st in ["PENDING", "PARTIAL_FILLED"]:
+                                print(f"🔄 [매수 재조준 {symbol}] 60초(40틱) 경과 미체결/부분체결 감지. 기존 주문 파기 및 현재가 갱신 격발.", flush=True)
                                 await client.cancel_order(buy_order_id)
                                 await asyncio.sleep(0.5)
                                 
@@ -642,7 +643,12 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 if new_price > 0.0:
                                     current_bp = await client.get_usd_buying_power()
                                     safe_bp = current_bp * 0.995
-                                    actual_budget = min(budget, safe_bp)
+                                    
+                                    avg_price_for_calc = float(holdings_detail.get('avg_price', 0.0))
+                                    spent_amount = holdings_qty * avg_price_for_calc
+                                    remaining_budget = budget - spent_amount
+                                    
+                                    actual_budget = min(remaining_budget, safe_bp)
                                     new_target_qty = int(math.floor(actual_budget / new_price))
                                     
                                     if new_target_qty > 0:
@@ -657,10 +663,13 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                             await AssassinLedger.save_state(symbol, buy_order_id=new_buy_id, entry_time=time.time())
                                             await notify_tg(
                                                 f"🔄 <b>[aVWAP {symbol}] 매수 주문 40틱 지연 재조준 격발</b>\n"
-                                                f"▫️ 사유: 지정가 주문 60초 이상 미체결 상태 감지\n"
+                                                f"▫️ 사유: {st} (지정가 60초 지연)\n"
                                                 f"▫️ 조치: 기존 주문 원자적 취소 및 팩트 현재가 갱신\n"
-                                                f"▫️ 신규 타격가: ${new_price:.2f} ({new_target_qty}주)"
+                                                f"▫️ 신규 타격가: ${new_price:.2f} (잔여 {new_target_qty}주)"
                                             )
+                                    else:
+                                        await AssassinLedger.save_state(symbol, entry_time=time.time())
+                                        print(f"✅ [매수 재조준 완료 {symbol}] 잔여 예산({remaining_budget:.2f}) 소진. 타격가 갱신 중단.", flush=True)
                         except Exception as e:
                             print(f"🚨 [매수 재조준 사격 방어 {symbol}] {e}", flush=True)
                         finally:
@@ -722,6 +731,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         await AssassinLedger.save_state(symbol, cond_order_id="")
                         cond_order_id = ""
             
+            # MODIFIED: 초과 Case 64 - 조건주문 익절 덫 1.0% 연산 시 잔량 분할(min) 소각 및 토스증권 장부상 전체 holdings_qty 및 팩트 평단가 최우선 락온
             if holdings_qty > 0 and not has_open_sell and not has_open_buy and not cond_order_id and not in_memory_ordering_lock[symbol] and is_active:
                 calculated_target = target_sell_price
                 trap_qty = holdings_qty
@@ -729,6 +739,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                 avg_price = float(holdings_detail.get('avg_price', 0.0))
                 is_rearm = True
                 trap_tag = "" 
+                skip_trap = False
                 
                 if calculated_target <= 0.0:
                     if buy_order_id:
@@ -736,19 +747,17 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                             order_detail = await client.get_order_detail(buy_order_id)
                             status = order_detail.get("status", "")
                             
-                            if status in ["FILLED", "PARTIAL_FILLED", "CANCELED", "REJECTED"]:
-                                filled_qty = int(math.floor(float(order_detail.get("execution", {}).get("filledQuantity", 0.0))))
-                                exec_price = float(order_detail.get("execution", {}).get("averageFilledPrice", 0.0))
-                                
-                                if filled_qty > 0:
-                                    trap_qty = min(holdings_qty, filled_qty)
-                                    if avg_price <= 0.0 and exec_price > 0.0:
-                                        avg_price = exec_price
-                                    is_rearm = False
+                            if status in ["PENDING", "PARTIAL_FILLED", "PENDING_CANCEL", "PENDING_REPLACE"]:
+                                skip_trap = True
+                            elif status in ["FILLED", "CANCELED", "REJECTED"]:
+                                is_rearm = False
                         except Exception:
                             pass
                     else:
                         is_rearm = False
+
+                    if skip_trap:
+                        continue
 
                     if avg_price <= 0.0:
                         avg_price = last_buy_price
@@ -757,7 +766,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         calculated_target = math.ceil(avg_price * 1.01 * 100) / 100.0
                         trap_tag = "+1.0%" if entry_session == "preMarket" and buy_order_id else "수동개입(+1.0%)"
 
-                if calculated_target > 0.0 and trap_qty > 0:
+                if calculated_target > 0.0 and trap_qty > 0 and not skip_trap:
                     in_memory_ordering_lock[symbol] = True
                     try:
                         client_id = idempotency_keys[symbol]["TRAP"]
