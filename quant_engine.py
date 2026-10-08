@@ -6,6 +6,7 @@
 # MODIFIED: 3단 하향망 로직 전면 소각 (1.0% 고정 락온) 및 관련 플래그 증발
 # NEW: 초과 Case 55 - 듀얼 휩소 동시 진입 방어를 위한 180초 교차 타임쉴드 원자적 장부 필드(entry_time) 증축
 # NEW: 취약점 1 방어 - NQ=F 매크로 데이터 60초 TTL 인메모리 캐시 중앙 통제소(MacroDataCache) 신설
+# MODIFIED: 취약점 1 완벽 방어 - 통신 실패 및 결측치 발생 시에도 타임스탬프 원자적 갱신으로 60초 TTL 쿨다운 강제 (IP 밴 차단 락온)
 
 import os
 import json
@@ -45,7 +46,10 @@ class MacroDataCache:
                     c, h, l = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=5.0)
                     if l > 0.0:
                         cls._nq_cache_data = (c, h, l, now)
+                    else:
+                        cls._nq_cache_data = (cls._nq_cache_data[0], cls._nq_cache_data[1], cls._nq_cache_data[2], now)
                 except Exception as e:
+                    cls._nq_cache_data = (cls._nq_cache_data[0], cls._nq_cache_data[1], cls._nq_cache_data[2], now)
                     print(f"🚨 [NQ=F 캐시 갱신 방어] {e}", flush=True)
             return cls._nq_cache_data[0], cls._nq_cache_data[1], cls._nq_cache_data[2]
 

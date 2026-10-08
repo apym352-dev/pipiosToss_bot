@@ -168,7 +168,6 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     except Exception:
         pass
 
-    # MODIFIED: 개별 fetch_nq_futures() 소각 및 MacroDataCache.get_cached_nq_data() 중앙 통제소 락온
     nq_c, nq_h, nq_l = await MacroDataCache.get_cached_nq_data()
     
     nq_amp = ((nq_h - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0

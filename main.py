@@ -36,6 +36,12 @@
 # MODIFIED: 취약점 2 방어 - 60초 미체결 매수 취소 후 잔고를 원자적으로 프로빙하여 정확한 잔여 예산(remaining_budget) 동적 산출
 # MODIFIED: 취약점 3 방어 - 덫 생존 판별망에 ORDERING, ORDERED 상태 추가하여 허위 수동 익절(False Positive) 원천 차단
 # REMOVED: 숏 스퀴즈 감시망 전면 소각 (수동 매매 폐기에 따른 단일 책임 원칙 락온)
+# MODIFIED: 17:00 EST 가비지 컬렉션(GC) 분(minute) 단위 하드코딩 증발 결함 방어 및 논리적 거래일 기준 1회성 락온 결속
+# NEW: 취약점 1 완벽 방어 - TRAP 무한 스팸 폭탄 차단용 last_trap_error_msg 전역 상태 주입 및 5초 백오프(Backoff) 쿨다운 결속
+# NEW: 취약점 2 완벽 방어 - 매수 재조준 시 예산 마이너스(Negative Budget) 발생을 원자적으로 차단하는 max(0.0) 하드 락온 및 데드락 해제
+# MODIFIED: 취약점 3 완벽 방어 - MOC 강제 덤핑 스윕 시 통신 병목 붕괴를 회피하는 asyncio.wait_for(timeout=2.0) 초단기 타임아웃 족쇄 체결
+# MODIFIED: MOC 덤핑, 매크로 손실 덤핑, 재조준 사격(R_BUY) 시 멱등성 키(idempotency_keys) 전역 상태 강제 결속 및 Timeout 생존망 주입
+# NEW: 치명적 엣지 케이스 완벽 방어 - 동시 기상 마이크로 휩소 레이스 컨디션 차단을 위한 전역 매수 뮤텍스(global_entry_mutex) 이중 검증망 결속
 
 import sys
 import os
@@ -91,11 +97,12 @@ HOLIDAY_TRANSLATIONS = {
 }
 
 in_memory_ordering_lock = {"SOXL": False, "SOXS": False}
+global_entry_mutex = asyncio.Lock()  # NEW: 초과 Case 52 레이스 컨디션 방어 전역 매수 뮤텍스
 shared_holdings = {"SOXL": 0, "SOXS": 0}
 
 idempotency_keys = {
-    "SOXL": {"BUY": None, "TRAP": None, "MOC": None},
-    "SOXS": {"BUY": None, "TRAP": None, "MOC": None}
+    "SOXL": {"BUY": None, "TRAP": None, "MOC": None, "M_DUMP": None},
+    "SOXS": {"BUY": None, "TRAP": None, "MOC": None, "M_DUMP": None}
 }
 
 holiday_notify_lock = asyncio.Lock()
@@ -206,8 +213,10 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
     last_logged_session = ""
     breakout_ticks = 0
     prev_is_active = None 
+    last_gc_date = ""
     
     last_error_msg = ""
+    last_trap_error_msg = ""
     
     async def notify_tg(text: str):
         try:
@@ -257,14 +266,16 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
             just_turned_off = (prev_is_active is True and is_active is False)
             prev_is_active = is_active
 
-            if now_est.hour == 17 and now_est.minute == 0:
+            today_str = now_est.strftime("%Y-%m-%d")
+            if 17 <= now_est.hour < 19 and last_gc_date != today_str:
+                last_gc_date = today_str
                 in_memory_ordering_lock[symbol] = False
-                idempotency_keys[symbol] = {"BUY": None, "TRAP": None, "MOC": None}
+                idempotency_keys[symbol] = {"BUY": None, "TRAP": None, "MOC": None, "M_DUMP": None}
                 last_moc_tick = 0.0
                 moc_dump_active = False
                 if holdings_qty == 0:
                     await AssassinLedger.save_state(symbol, buy_order_id="", cond_order_id="", entry_session="", entry_time=0.0)
-                print(f"🧹 [GC {symbol}] 17:00 EST 락 해제 및 자정 초기화 완료.", flush=True)
+                print(f"🧹 [GC {symbol}] 17:00~18:59 EST 윈도우 진입. 락 해제 및 자정 초기화 확증 완료.", flush=True)
                 await asyncio.sleep(60)
                 continue
             
@@ -279,14 +290,13 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     raw_reason = sess_name.split("|")[1] if "|" in sess_name else "미국 주식시장 정규 휴장"
                     translated_reason = HOLIDAY_TRANSLATIONS.get(raw_reason, raw_reason)
                     reason = html.escape(translated_reason)
-                    today_str = now_est.strftime("%Y-%m-%d")
                     
                     if last_holiday_notified_date != today_str:
                         if 400 <= est_time_int <= 405:
                             async with holiday_notify_lock:
                                 if last_holiday_notified_date != today_str:
                                     last_holiday_notified_date = today_str
-                                    await notify_tg(f"🛑 <b>[시스템 대기] 미국 주식시장 휴무 안내</b>\n▫️ 사유: {reason}\n▫️ 조치: 금일 듀얼 암살자 전술 가 가동 전면 차단 및 레이더망 휴식")
+                                    await notify_tg(f"🛑 <b>[시스템 대기] 미국 주식시장 휴무 안내</b>\n▫️ 사유: {reason}\n▫️ 조치: 금일 듀얼 암살자 전술 가동 전면 차단 및 레이더망 휴식")
                                     print(f"🛑 [휴장 감지] {today_str} {reason} - 시스템 대기.", flush=True)
                 await asyncio.sleep(60.0)
                 continue
@@ -356,22 +366,36 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 bid_1_price = float(bids[0]["price"]) if bids and float(bids[0]["price"]) > 0.0 else current_price
                                 
                                 if bid_1_price > 0.0:
-                                    client_id = f"MOC_{symbol}_{now_est.strftime('%H%M%S_%f')}"[:36]
+                                    client_id = idempotency_keys[symbol]["MOC"]
+                                    if not client_id:
+                                        client_id = f"MOC_{symbol}_{now_est.strftime('%H%M%S')}"[:36]
+                                        idempotency_keys[symbol]["MOC"] = client_id
                                     
-                                    await client.create_order(
-                                        symbol=symbol, side="SELL", order_type="LIMIT",
-                                        quantity=dump_qty, price=f"{bid_1_price:.2f}",
-                                        client_order_id=client_id
-                                    )
-                                    
-                                    print(f"🔴 [매도 덤핑 스윕 {symbol}] 1.5초 주기 타격! 수량: {dump_qty}주 | 단가: ${bid_1_price:.2f}", flush=True)
-                                    await AssassinLedger.save_state(symbol, is_session_done=True)
-                                    
-                                    if not moc_dump_active:
-                                        moc_dump_active = True
-                                        await notify_tg(f"🔴 <b>[aVWAP {symbol}] 15:59~16:01 제로오버나이트 덤핑망 결속</b>\n▫️ 1.5초 간격 체결 추적 및 매수 1호가 지속 폭격 개시")
+                                    try:
+                                        await asyncio.wait_for(
+                                            client.create_order(
+                                                symbol=symbol, side="SELL", order_type="LIMIT",
+                                                quantity=dump_qty, price=f"{bid_1_price:.2f}",
+                                                client_order_id=client_id
+                                            ),
+                                            timeout=2.0
+                                        )
+                                        
+                                        print(f"🔴 [매도 덤핑 스윕 {symbol}] 1.5초 주기 타격! 수량: {dump_qty}주 | 단가: ${bid_1_price:.2f}", flush=True)
+                                        await AssassinLedger.save_state(symbol, is_session_done=True)
+                                        
+                                        if not moc_dump_active:
+                                            moc_dump_active = True
+                                            await notify_tg(f"🔴 <b>[aVWAP {symbol}] 15:59~16:01 제로오버나이트 덤핑망 결속</b>\n▫️ 1.5초 간격 체결 추적 및 매수 1호가 지속 폭격 개시")
+                                            
+                                        idempotency_keys[symbol]["MOC"] = None
+                                    except asyncio.TimeoutError:
+                                        print(f"🚨 [MOC 타임아웃 방어 {symbol}] API 응답 2초 초과. 병목 회피 및 락 해제.", flush=True)
                         except Exception as e:
-                            print(f"🚨 [MOC 방어] {e}", flush=True)
+                            err_str = str(e)
+                            print(f"🚨 [MOC 방어] {err_str}", flush=True)
+                            if "400" in err_str or "422" in err_str or "404" in err_str:
+                                idempotency_keys[symbol]["MOC"] = None
                         finally:
                             last_moc_tick = time.time()
                             in_memory_ordering_lock[symbol] = False
@@ -455,7 +479,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                             if cond_order_id:
                                 try:
                                     cond_detail = await client.get_conditional_order_detail(cond_order_id)
-                                    # MODIFIED: 조건주문 생존 판별 상태에 ORDERING, ORDERED 추가 결속 (허위 익절 방어)
                                     if cond_detail.get("status") in ["WATCHING", "PAUSED", "ORDERING", "ORDERED"]:
                                         is_trap_survived = True
                                     await client.cancel_conditional_order(cond_order_id)
@@ -507,7 +530,11 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                             bid_1_price = float(bids[0]["price"]) if bids and float(bids[0]["price"]) > 0.0 else current_price
                             
                             if bid_1_price > 0.0:
-                                client_id = f"M_DUMP_{symbol}_{now_est.strftime('%H%M%S_%f')}"[:36]
+                                client_id = idempotency_keys[symbol]["M_DUMP"]
+                                if not client_id:
+                                    client_id = f"MDUMP_{symbol}_{now_est.strftime('%H%M%S')}"[:36]
+                                    idempotency_keys[symbol]["M_DUMP"] = client_id
+                                    
                                 await client.create_order(
                                     symbol=symbol, side="SELL", order_type="LIMIT",
                                     quantity=holdings_qty, price=f"{bid_1_price:.2f}",
@@ -521,8 +548,13 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     f"▫️ 조치: 1.0% 익절 덫 원자적 파기 및 전량 시장가(LIMIT) 덤핑 퇴근"
                                 )
                                 print(f"🚨 [매크로 손실 덤핑 {symbol}] NQ=F {nq_amp_dump:.2f}% 도달. 손실권 방어 전량 덤핑 발사 완료.", flush=True)
+                                
+                                idempotency_keys[symbol]["M_DUMP"] = None
                         except Exception as e:
-                            print(f"🚨 [매크로 덤핑 방어 {symbol}] {e}", flush=True)
+                            err_str = str(e)
+                            print(f"🚨 [매크로 덤핑 방어 {symbol}] {err_str}", flush=True)
+                            if "400" in err_str or "422" in err_str or "404" in err_str:
+                                idempotency_keys[symbol]["M_DUMP"] = None
                         finally:
                             in_memory_ordering_lock[symbol] = False
                         continue
@@ -560,38 +592,50 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                     current_bp = await client.get_usd_buying_power()
                                     safe_bp = current_bp * 0.995
                                     
-                                    # MODIFIED: 60초 지연 재조준 시 최신 잔고 원자적 동기화 (Race Condition 방어)
                                     holdings_detail_retry = await client.get_symbol_holdings_detail(symbol)
                                     holdings_qty_retry = int(math.floor(holdings_detail_retry['qty']))
                                     avg_price_for_calc = float(holdings_detail_retry.get('avg_price', 0.0))
                                     
                                     spent_amount = holdings_qty_retry * avg_price_for_calc
-                                    remaining_budget = budget - spent_amount
+                                    remaining_budget = max(0.0, budget - spent_amount)
                                     
-                                    actual_budget = min(remaining_budget, safe_bp)
-                                    new_target_qty = int(math.floor(actual_budget / new_price))
-                                    
-                                    if new_target_qty > 0:
-                                        client_id = f"R_BUY_{symbol}_{now_est.strftime('%H%M%S_%f')}"[:36]
-                                        res = await client.create_order(
-                                            symbol=symbol, side="BUY", order_type="LIMIT",
-                                            quantity=new_target_qty, price=f"{new_price:.2f}",
-                                            client_order_id=client_id
-                                        )
-                                        if res and isinstance(res, dict) and res.get("result", {}).get("orderId"):
-                                            new_buy_id = str(res["result"]["orderId"])
-                                            await AssassinLedger.save_state(symbol, buy_order_id=new_buy_id, entry_time=time.time())
-                                            await notify_tg(
-                                                f"🔄 <b>[aVWAP {symbol}] 매수 주문 40틱 지연 재조준 격발</b>\n"
-                                                f"▫️ 사유: {st} (지정가 60초 지연)\n"
-                                                f"▫️ 조치: 기존 주문 원자적 취소 및 팩트 현재가 갱신\n"
-                                                f"▫️ 신규 타격가: ${new_price:.2f} (잔여 {new_target_qty}주)"
-                                            )
+                                    if remaining_budget <= 0.0:
+                                        await AssassinLedger.save_state(symbol, entry_time=time.time(), is_session_done=True)
+                                        print(f"✅ [매수 재조준 중단 {symbol}] 잔여 예산 고갈({remaining_budget:.2f}). 데드락 해제 및 타격가 갱신 중단.", flush=True)
                                     else:
-                                        await AssassinLedger.save_state(symbol, entry_time=time.time())
-                                        print(f"✅ [매수 재조준 완료 {symbol}] 잔여 예산({remaining_budget:.2f}) 소진. 타격가 갱신 중단.", flush=True)
+                                        actual_budget = min(remaining_budget, safe_bp)
+                                        new_target_qty = int(math.floor(actual_budget / new_price))
+                                        
+                                        if new_target_qty > 0:
+                                            client_id = idempotency_keys[symbol]["BUY"]
+                                            if not client_id:
+                                                client_id = f"RBUY_{symbol}_{now_est.strftime('%H%M%S')}"[:36]
+                                                idempotency_keys[symbol]["BUY"] = client_id
+                                                
+                                            res = await client.create_order(
+                                                symbol=symbol, side="BUY", order_type="LIMIT",
+                                                quantity=new_target_qty, price=f"{new_price:.2f}",
+                                                client_order_id=client_id
+                                            )
+                                            if res and isinstance(res, dict) and res.get("result", {}).get("orderId"):
+                                                new_buy_id = str(res["result"]["orderId"])
+                                                await AssassinLedger.save_state(symbol, buy_order_id=new_buy_id, entry_time=time.time())
+                                                idempotency_keys[symbol]["BUY"] = None
+                                                
+                                                await notify_tg(
+                                                    f"🔄 <b>[aVWAP {symbol}] 매수 주문 40틱 지연 재조준 격발</b>\n"
+                                                    f"▫️ 사유: {st} (지정가 60초 지연)\n"
+                                                    f"▫️ 조치: 기존 주문 원자적 취소 및 팩트 현재가 갱신\n"
+                                                    f"▫️ 신규 타격가: ${new_price:.2f} (잔여 {new_target_qty}주)"
+                                                )
+                                        else:
+                                            await AssassinLedger.save_state(symbol, entry_time=time.time(), is_session_done=True)
+                                            print(f"✅ [매수 재조준 완료 {symbol}] 잔여 예산({remaining_budget:.2f})으로 1주 매수 불가. 타격가 갱신 중단.", flush=True)
                         except Exception as e:
-                            print(f"🚨 [매수 재조준 사격 방어 {symbol}] {e}", flush=True)
+                            err_str = str(e)
+                            print(f"🚨 [매수 재조준 사격 방어 {symbol}] {err_str}", flush=True)
+                            if "400" in err_str or "422" in err_str or "404" in err_str:
+                                idempotency_keys[symbol]["BUY"] = None
                         finally:
                             in_memory_ordering_lock[symbol] = False
 
@@ -718,8 +762,15 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         
                         idempotency_keys[symbol]["TRAP"] = None
                     except Exception as e:
-                        print(f"🚨 [TRAP 방어] {e}", flush=True)
-                        await notify_tg(f"🚨 <b>[TRAP 에러 {symbol}]</b> {html.escape(str(e))}")
+                        idempotency_keys[symbol]["TRAP"] = None
+                        err_str = str(e)
+                        if err_str != last_trap_error_msg:
+                            await notify_tg(f"🚨 <b>[TRAP 에러 {symbol}]</b> {html.escape(err_str)}\n▫️ 조치: 멱등성 데드락 해제 및 재장전 파이프라인 가동 (5초 쿨다운 락온)")
+                            last_trap_error_msg = err_str
+                        else:
+                            print(f"🔇 [TRAP 무한 침묵 {symbol}] 동일 통신 에러 타전 영구 억제 중: {err_str}", flush=True)
+                        print(f"🚨 [TRAP 방어] {err_str}", flush=True)
+                        await asyncio.sleep(5.0)
                     finally:
                         in_memory_ordering_lock[symbol] = False
                 continue
@@ -757,91 +808,108 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                     breakout_ticks = 0
                 
                 if can_enter and breakout_ticks >= required_ticks:
-                    if not in_memory_ordering_lock[symbol]:
-                        in_memory_ordering_lock[symbol] = True
-                        try:
-                            nq_c_check, nq_h_check, nq_l_check = await MacroDataCache.get_cached_nq_data()
-                            nq_amp_check = ((nq_h_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
-                            
-                            if nq_amp_check >= 2.0:
-                                breakout_ticks = 0
-                                await AssassinLedger.save_state(symbol, is_session_done=True)
-                                print(f"🛑 [매크로 진입 차단 {symbol}] NQ=F 진폭 {nq_amp_check:.2f}% 도달. 당일 신규 매수 영구 소각.", flush=True)
-                                await notify_tg(
-                                    f"🛑 <b>[aVWAP {symbol}] 대세장 이탈 감지 (매수 차단)</b>\n"
-                                    f"▫️ 사유: NQ=F 실시간 진폭 <code>{nq_amp_check:.2f}%</code> (2.0% 초과 확증)\n"
-                                    f"▫️ 조치: 추세 붕괴 및 극심한 휩소 위험으로 돌파 요격 취소. 당일 신규 진입 권한 영구 소각 및 관망 퇴근"
-                                )
-                                continue
-
-                            other_symbol_for_lock = "SOXS" if symbol == "SOXL" else "SOXL"
-                            other_hold_check = await client.get_symbol_holdings_detail(other_symbol_for_lock)
-                            other_hold_qty_check = int(math.floor(other_hold_check.get('qty', 0.0)))
-                            
-                            if other_hold_qty_check > 0:
-                                breakout_ticks = 0
-                                await AssassinLedger.save_state(other_symbol_for_lock, is_session_done=True)
-                                print(f"🚨 [듀얼 절대 쉴드 락온] {symbol} 돌파 확증되었으나 반대 종목({other_symbol_for_lock}) 수동/자동 잔고 포착! 요격 원천 차단.", flush=True)
-                                continue
-
-                            target_price = current_price
+                    async with global_entry_mutex:
+                        if not in_memory_ordering_lock[symbol]:
+                            in_memory_ordering_lock[symbol] = True
+                            try:
+                                nq_c_check, nq_h_check, nq_l_check = await MacroDataCache.get_cached_nq_data()
+                                nq_amp_check = ((nq_h_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
                                 
-                            if target_price > 0.0:
-                                try:
-                                    current_bp = await client.get_usd_buying_power()
-                                    safe_bp = current_bp * 0.995
-                                    actual_budget = min(budget, safe_bp)
-                                except Exception as e:
-                                    print(f"🚨 [Buying Power 검증 방어] {e}", flush=True)
-                                    actual_budget = budget
-
-                                target_qty = int(math.floor(actual_budget / target_price))
-                                
-                                if target_qty > 0:
-                                    client_id = idempotency_keys[symbol]["BUY"]
-                                    if not client_id:
-                                        client_id = f"BUY_{symbol}_{now_est.strftime('%Y%m%d_%H%M%S')}"
-                                        idempotency_keys[symbol]["BUY"] = client_id
-
-                                    res = await client.create_order(
-                                        symbol=symbol, side="BUY", order_type="LIMIT",
-                                        quantity=target_qty, price=f"{target_price:.2f}",
-                                        client_order_id=client_id
-                                    )
-                                    
-                                    print(f"🚀 [매수 집행 {symbol}] 현재가 기반 지정가(LIMIT) 요격 발사 완료. 수량: {target_qty}주 | 타격가(현재가): ${target_price:.2f}", flush=True)
-                                    
-                                    if res and isinstance(res, dict) and res.get("result", {}).get("orderId"):
-                                        await AssassinLedger.save_state(symbol, buy_order_id=str(res["result"]["orderId"]), entry_session=hardcoded_session, entry_time=time.time())
-                                    
-                                    idempotency_keys[symbol]["BUY"] = None
-                                    
-                                    nq_current_amp = ((nq_c_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
-                                        
-                                    nq_alert_str = ""
-                                    if nq_c_check > 0.0 and nq_l_check > 0.0:
-                                        nq_alert_str = (
-                                            f"\n➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
-                                            f"🌐 <b>나스닥 100 선물 (NQ=F) 안전망 확인</b>\n"
-                                            f"▫️ 현재: <code>{nq_c_check:.2f}</code> | 고가: <code>{nq_h_check:.2f}</code> | 저가: <code>{nq_l_check:.2f}</code>\n"
-                                            f"▫️ 총 진폭: <code>{nq_amp_check:.2f}%</code> (2.0% 이하 안정권)\n"
-                                            f"▫️ 반등 진폭: <code>{nq_current_amp:.2f}%</code>"
-                                        )
-                                    
-                                    lock_msg = f"VWAP 연속 돌파 방어망 통과 ({required_ticks}틱)"
+                                if nq_amp_check >= 2.0:
+                                    breakout_ticks = 0
+                                    await AssassinLedger.save_state(symbol, is_session_done=True)
+                                    print(f"🛑 [매크로 진입 차단 {symbol}] NQ=F 진폭 {nq_amp_check:.2f}% 도달. 당일 신규 매수 영구 소각.", flush=True)
                                     await notify_tg(
-                                        f"🚀 <b>[aVWAP {symbol}] 단독 돌파 요격 매수 (세션: {hardcoded_session})</b>\n"
-                                        f"▫️ aVWAP: ${vwap_price:.2f}\n"
-                                        f"▫️ 타격가(현재가): ${target_price:.2f}\n"
-                                        f"▫️ 수량: {target_qty}주\n"
-                                        f"▫️ 확증: {lock_msg}"
-                                        f"{nq_alert_str}"
+                                        f"🛑 <b>[aVWAP {symbol}] 대세장 이탈 감지 (매수 차단)</b>\n"
+                                        f"▫️ 사유: NQ=F 실시간 진폭 <code>{nq_amp_check:.2f}%</code> (2.0% 초과 확증)\n"
+                                        f"▫️ 조치: 추세 붕괴 및 극심한 휩소 위험으로 돌파 요격 취소. 당일 신규 진입 권한 영구 소각 및 관망 퇴근"
                                     )
-                        except Exception as e:
-                            print(f"🚨 [BUY 방어] {e}", flush=True)
-                            await notify_tg(f"🚨 <b>[BUY 에러 {symbol}]</b> {html.escape(str(e))}")
-                        finally:
-                            in_memory_ordering_lock[symbol] = False
+                                    continue
+
+                                other_symbol_for_lock = "SOXS" if symbol == "SOXL" else "SOXL"
+                                other_state_lock = await AssassinLedger.get_state(other_symbol_for_lock)
+                                other_is_done_lock = other_state_lock[3]
+                                other_buy_id_lock = await AssassinLedger.get_buy_order_id(other_symbol_for_lock)
+                                other_hold_check = await client.get_symbol_holdings_detail(other_symbol_for_lock)
+                                other_hold_qty_check = int(math.floor(other_hold_check.get('qty', 0.0)))
+                                
+                                if other_hold_qty_check > 0 or other_is_done_lock or other_buy_id_lock:
+                                    breakout_ticks = 0
+                                    await AssassinLedger.save_state(symbol, is_session_done=True)
+                                    print(f"🚨 [듀얼 절대 쉴드 락온] {symbol} 돌파 확증되었으나 반대 종목({other_symbol_for_lock}) 수동/자동 잔고 포착! 당일 진입 영구 차단(퇴근).", flush=True)
+                                    continue
+
+                                target_price = current_price
+                                    
+                                if target_price > 0.0:
+                                    try:
+                                        current_bp = await client.get_usd_buying_power()
+                                        safe_bp = current_bp * 0.995
+                                        actual_budget = min(budget, safe_bp)
+                                    except Exception as e:
+                                        print(f"🚨 [Buying Power 검증 방어] {e}", flush=True)
+                                        actual_budget = budget
+
+                                    target_qty = int(math.floor(actual_budget / target_price))
+                                    
+                                    if target_qty > 0:
+                                        client_id = idempotency_keys[symbol]["BUY"]
+                                        if not client_id:
+                                            client_id = f"BUY_{symbol}_{now_est.strftime('%Y%m%d_%H%M%S')}"
+                                            idempotency_keys[symbol]["BUY"] = client_id
+
+                                        res = await client.create_order(
+                                            symbol=symbol, side="BUY", order_type="LIMIT",
+                                            quantity=target_qty, price=f"{target_price:.2f}",
+                                            client_order_id=client_id
+                                        )
+                                        
+                                        print(f"🚀 [매수 집행 {symbol}] 현재가 기반 지정가(LIMIT) 요격 발사 완료. 수량: {target_qty}주 | 타격가(현재가): ${target_price:.2f}", flush=True)
+                                        
+                                        if res and isinstance(res, dict) and res.get("result", {}).get("orderId"):
+                                            await AssassinLedger.save_state(symbol, buy_order_id=str(res["result"]["orderId"]), entry_session=hardcoded_session, entry_time=time.time())
+                                        
+                                        idempotency_keys[symbol]["BUY"] = None
+                                        
+                                        nq_current_amp = ((nq_c_check - nq_l_check) / nq_l_check * 100.0) if nq_l_check > 0.0 else 0.0
+                                            
+                                        nq_alert_str = ""
+                                        if nq_c_check > 0.0 and nq_l_check > 0.0:
+                                            nq_alert_str = (
+                                                f"\n➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
+                                                f"🌐 <b>나스닥 100 선물 (NQ=F) 안전망 확인</b>\n"
+                                                f"▫️ 현재: <code>{nq_c_check:.2f}</code> | 고가: <code>{nq_h_check:.2f}</code> | 저가: <code>{nq_l_check:.2f}</code>\n"
+                                                f"▫️ 총 진폭: <code>{nq_amp_check:.2f}%</code> (2.0% 이하 안정권)\n"
+                                                f"▫️ 반등 진폭: <code>{nq_current_amp:.2f}%</code>"
+                                            )
+                                        
+                                        lock_msg = f"VWAP 연속 돌파 방어망 통과 ({required_ticks}틱)"
+                                        await notify_tg(
+                                            f"🚀 <b>[aVWAP {symbol}] 단독 돌파 요격 매수 (세션: {hardcoded_session})</b>\n"
+                                            f"▫️ aVWAP: ${vwap_price:.2f}\n"
+                                            f"▫️ 타격가(현재가): ${target_price:.2f}\n"
+                                            f"▫️ 수량: {target_qty}주\n"
+                                            f"▫️ 확증: {lock_msg}"
+                                            f"{nq_alert_str}"
+                                        )
+                            except Exception as e:
+                                err_str = str(e)
+                                print(f"🚨 [BUY 방어] {err_str}", flush=True)
+                                await notify_tg(f"🚨 <b>[BUY 에러 {symbol}]</b> {html.escape(err_str)}")
+                                
+                                if "400" in err_str or "422" in err_str:
+                                    idempotency_keys[symbol]["BUY"] = None
+                                    await AssassinLedger.save_state(symbol, is_session_done=True)
+                                    print(f"🛑 [스팸 방어 {symbol}] 400/422 에러 감지. 당일 신규 매수 권한 소각.", flush=True)
+                                    await notify_tg(
+                                        f"🛑 <b>[aVWAP {symbol}] 매수 요격 영구 셧다운</b>\n"
+                                        f"▫️ 사유: 클라이언트 거부(400/422)에 의한 무한 스팸 루프 징후 감지\n"
+                                        f"▫️ 조치: 멱등성 키 강제 소각 및 당일 신규 매수 권한 100% 영구 소각 완료"
+                                    )
+                                elif "401" in err_str or "403" in err_str or "429" in err_str:
+                                    idempotency_keys[symbol]["BUY"] = None
+                            finally:
+                                in_memory_ordering_lock[symbol] = False
             else:
                 breakout_ticks = 0
 
