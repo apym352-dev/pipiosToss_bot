@@ -7,6 +7,8 @@
 # NEW: 초과 Case 55 - 듀얼 휩소 동시 진입 방어를 위한 180초 교차 타임쉴드 원자적 장부 필드(entry_time) 증축
 # NEW: 취약점 1 방어 - NQ=F 매크로 데이터 60초 TTL 인메모리 캐시 중앙 통제소(MacroDataCache) 신설
 # MODIFIED: 취약점 1 완벽 방어 - 통신 실패 및 결측치 발생 시에도 타임스탬프 원자적 갱신으로 60초 TTL 쿨다운 강제 (IP 밴 차단 락온)
+# MODIFIED: 치명적 취약점 방어 - NQ=F 세션 시프트 직후 데이터 프레임 증발 시 발생하는 IndexError 원천 소각 (df.empty 검증망 주입)
+# MODIFIED: NQ=F 1d 자정 롤오버 왜곡 방어 - 45분 갭 필터링 경계값 원자적 하드 락온 (>= 45분)
 
 import os
 import json
@@ -37,10 +39,15 @@ class MacroDataCache:
                     if df.empty: return 0.0, 0.0, 0.0
                     df.index = pd.to_datetime(df.index, utc=True).tz_convert(ZoneInfo('America/New_York'))
                     time_diffs = df.index.to_series().diff()
-                    gaps = time_diffs[time_diffs > pd.Timedelta(minutes=45)]
+                    # MODIFIED: 정확히 45분 휴식하는 선물 거래소 캘린더를 위해 > 대신 >= 로 경계값 원자적 락온
+                    gaps = time_diffs[time_diffs >= pd.Timedelta(minutes=45)]
                     if not gaps.empty:
                         last_gap_time = gaps.index[-1]
                         df = df[df.index >= last_gap_time]
+                        
+                    # MODIFIED: 치명적 결함(IndexError) 방어를 위한 원자적 검증망 락온
+                    if df.empty: return 0.0, 0.0, 0.0
+                    
                     return float(df['Close'].iloc[-1]), float(df['High'].max()), float(df['Low'].min())
                 try:
                     c, h, l = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=5.0)

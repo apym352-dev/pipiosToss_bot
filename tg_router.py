@@ -27,10 +27,16 @@
 # NEW: 관제탑 UI NQ=F 저가 대비 현재가 실시간 반등 진폭(nq_current_amp) 연산 및 2줄 분리 렌더링 결속
 # MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
 # MODIFIED: 취약점 1 방어 - quant_engine.MacroDataCache 캐시 저장소 연동으로 NQ=F 다중 호출 방어 및 IP 밴 락온 결속
+# NEW: 취약점 1 방어 - 나스닥 100 선물(NQ=F) 기반 레버리지 실시간 기대 진폭(x5.0) 동적 연산 및 UI 분리 렌더링 하드 락온
+# MODIFIED: 취약점 2 방어 - dayMarket 세션(19:00~03:59 EST) 진입 시 '장외대기' 오표출 소각 및 '시스템대기' 원자적 팩트 렌더링 결속
+# MODIFIED: FSMContext 상태 안전망 결속 및 클래스 정적 변수 동시성 붕괴 방어
+# MODIFIED: time 모듈 전역 스코프 전진 배치를 통한 인라인 임포트 병목 소각 최적화 락온
+# MODIFIED: 5MA 전일 실질 등락률 연산 결측치 ZeroDivision 방어를 위한 스코프 전진 배치 및 원자적 검증망 락온
 
 import os
 import html
 import asyncio
+import time
 import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -54,7 +60,6 @@ def inject_dependencies(client, admin_id, event):
 
 class BudgetState(StatesGroup):
     waiting_for_budget = State()
-    symbol = None
 
 def get_main_menu_text() -> str:
     now_est = datetime.now(ZoneInfo('America/New_York'))
@@ -172,6 +177,8 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     
     nq_amp = ((nq_h - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
     nq_current_amp = ((nq_c - nq_l) / nq_l * 100.0) if nq_l > 0.0 else 0.0
+    
+    lev_expected_amp = nq_amp * 5.0
 
     price_l = await api_client.get_current_price("SOXL")
     price_s = await api_client.get_current_price("SOXS")
@@ -180,6 +187,10 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     hold_s = await api_client.get_symbol_holdings_detail("SOXS")
 
     async def fetch_5ma_amp(symbol):
+        avg_amp = 0.0
+        yesterday_amp = 0.0
+        yesterday_return = 0.0
+        
         try:
             endpoint = f"/api/v1/candles?symbol={symbol}&interval=1d&count=6"
             data = await api_client._request("GET", endpoint, "MARKET_DATA_CHART", headers=api_client._get_headers())
@@ -203,8 +214,6 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
                 valid_candles = candles[0:5]
                 
             amps = []
-            yesterday_amp = 0.0
-            yesterday_return = 0.0
             
             for i, c in enumerate(valid_candles):
                 h = float(c.get("highPrice", 0))
@@ -216,12 +225,18 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
                         yesterday_amp = amp
             
             if len(valid_candles) >= 2:
-                yest_cls = float(valid_candles[0].get("closePrice", 0))
-                prev_cls = float(valid_candles[1].get("closePrice", 0))
-                if prev_cls > 0:
-                    yesterday_return = (yest_cls - prev_cls) / prev_cls * 100
+                yest_cls_raw = valid_candles[0].get("closePrice")
+                prev_cls_raw = valid_candles[1].get("closePrice")
+                
+                yest_cls = float(yest_cls_raw) if yest_cls_raw is not None else 0.0
+                prev_cls = float(prev_cls_raw) if prev_cls_raw is not None else 0.0
+                
+                if prev_cls > 0.0:
+                    yesterday_return = ((yest_cls - prev_cls) / prev_cls) * 100.0
                         
-            avg_amp = sum(amps) / len(amps) if amps else 0.0
+            if amps:
+                avg_amp = sum(amps) / len(amps)
+                
             return avg_amp, yesterday_amp, yesterday_return
         except Exception:
             return 0.0, 0.0, 0.0
@@ -305,7 +320,6 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
             state_text = "타격완료"
         else:
             if current_session == "preMarket":
-                import time
                 current_time_for_ui = time.time()
                 if est_time.hour == 4:
                     if est_time.minute <= 6:
@@ -318,6 +332,8 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
                         state_text = "PRE대기"
                 else:
                     state_text = "PRE대기"
+            elif current_session == "dayMarket":
+                state_text = "시스템대기"
             else:
                 state_text = "장외대기"
 
@@ -334,6 +350,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
 🌐 <b>나스닥 100 선물 (NQ=F)</b>
 ▫️ 현재: <code>{nq_c:.2f}</code> | 고가: <code>{nq_h:.2f}</code> | 저가: <code>{nq_l:.2f}</code>
 ▫️ 총 진폭: <code>{nq_amp:.2f}%</code> | 저점 대비 반등: <code>{nq_current_amp:.2f}%</code>
+▫️ 레버리지 기대 진폭 (x5.0): <code>{lev_expected_amp:.2f}%</code>
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
 📊 <b>현재가 & 5MA(어제 진폭)</b>
 🐂 <b>SOXL</b> <code>${price_l:.2f}</code> | <code>{amp_l:.1f}%({yest_amp_l:.1f}%)</code>
@@ -685,7 +702,7 @@ async def process_set_budget(callback_query: types.CallbackQuery, state: FSMCont
     symbol = callback_query.data.split("_")[2].upper()
     print(f"💬 [TG 콜백 수신] set_budget_{symbol} (User: {user.id})", flush=True)
     await state.set_state(BudgetState.waiting_for_budget)
-    BudgetState.symbol = symbol
+    await state.update_data(symbol=symbol)
     text = f"⌨️ <b>{html.escape(symbol)} 예산 입력 (USD)</b>\n\n▫️ 투입할 달러 예산을 숫자로 전송하십시오."
     try:
         await callback_query.message.edit_text(text, parse_mode="HTML")
@@ -697,7 +714,12 @@ async def process_budget_input(message: types.Message, state: FSMContext):
     user = getattr(message, "from_user", None)
     if not user or getattr(user, "id", None) != ADMIN_CHAT_ID:
         return
-    symbol = BudgetState.symbol
+        
+    user_data = await state.get_data()
+    symbol = user_data.get("symbol")
+    if not symbol:
+        return
+        
     print(f"💬 [TG 상태 수신] {symbol} 예산 입력 접수: {message.text.strip()} (User: {user.id})", flush=True)
     try:
         budget = float(message.text.strip())
