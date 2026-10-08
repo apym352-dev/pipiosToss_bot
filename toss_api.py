@@ -5,8 +5,9 @@
 # MODIFIED: pandas_market_calendars 외부 라이브러리 기반 NYSE 휴무일 절대 식별망 주입
 # MODIFIED: 캘린더 블로킹 연산 방어를 위한 asyncio.to_thread 스레드 격리 헌법 준수
 # MODIFIED: 외부 모듈 예외 시 제2 방어선(토스증권 API) 무중단 Fallback 경로 강제 (Case 21 방어)
-# NEW: 19:00 EST 기점 논리적 거래일(Logical Trading Day) 롤오버 파이프라인 결속 (야간 데이마켓 휴장일 오인 차단)
+# MODIFIED: 19:00 EST 기점 논리적 거래일(Logical Trading Day) 롤오버 파이프라인 결속 (야간 데이마켓 휴장일 오인 차단)
 # MODIFIED: 초과 Case 62 - 토스 인증 모듈(_do_authenticate) HTTP 상태 코드 검증망 주입을 통한 JSON 파싱 붕괴(HTML 응답) 원천 차단
+# MODIFIED: 초과 Case 69 - API Null 페이로드 응답 시 단락 평가(or)를 통한 AttributeError 체이닝 붕괴 완벽 방어 락온
 
 import asyncio
 import aiohttp
@@ -172,7 +173,7 @@ class TossApiClient:
     async def fetch_account_seq(self):
         if not self.token: await self.authenticate()
         data = await self._request("GET", "/api/v1/accounts", "ACCOUNT", headers=self._get_headers())
-        accounts = data.get("result", [])
+        accounts = data.get("result") or []
         for acc in accounts:
             if acc.get("accountType") == "BROKERAGE":
                 self.account_seq = acc.get("accountSeq")
@@ -184,18 +185,21 @@ class TossApiClient:
         if before:
             endpoint += f"&before={before.replace('+', '%2B')}"
         data = await self._request("GET", endpoint, "MARKET_DATA_CHART", headers=self._get_headers())
-        return data.get("result", {})
+        return data.get("result") or {}
 
     async def get_symbol_holdings_detail(self, symbol: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/holdings?symbol={symbol}", "ASSET", headers=self._get_headers(requires_account=True))
-        items = data.get("result", {}).get("items", [])
+        res_dict = data.get("result") or {}
+        items = res_dict.get("items") or []
+        
         if not items:
             return {"qty": 0.0, "avg_price": 0.0, "profit_rate": 0.0, "profit_usd": 0.0}
+            
         item = items[0]
-        
         qty_raw = item.get("quantity")
         avg_price_raw = item.get("averagePurchasePrice")
+        
         return {
             "qty": float(qty_raw) if qty_raw is not None else 0.0,
             "avg_price": float(avg_price_raw) if avg_price_raw is not None else 0.0,
@@ -206,7 +210,8 @@ class TossApiClient:
     async def get_usd_buying_power(self) -> float:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", "/api/v1/buying-power?currency=USD", "ORDER_INFO", headers=self._get_headers(requires_account=True))
-        bp_raw = data.get("result", {}).get("cashBuyingPower")
+        res_dict = data.get("result") or {}
+        bp_raw = res_dict.get("cashBuyingPower")
         return float(bp_raw) if bp_raw is not None else 0.0
 
     async def is_market_open(self) -> tuple[bool, datetime, str, datetime]:
@@ -215,8 +220,6 @@ class TossApiClient:
             return self._calendar_cache
 
         now_est = datetime.now(ZoneInfo('America/New_York'))
-        
-        # NEW: 19:00 EST 기점 논리적 거래일(Logical Trading Day) 롤오버 락온
         logical_est = now_est if now_est.hour < 19 else now_est + timedelta(days=1)
         
         try:
@@ -234,7 +237,7 @@ class TossApiClient:
             if not self.token: await self.authenticate()
             endpoint = f"/api/v1/market-calendar/US?date={est_today_str}"
             data = await self._request("GET", endpoint, "MARKET_INFO", headers=self._get_headers())
-            result_data = data.get("result", {})
+            result_data = data.get("result") or {}
             
             for day_key in ["today", "nextBusinessDay", "previousBusinessDay"]:
                 day_obj = result_data.get(day_key)
@@ -321,7 +324,7 @@ class TossApiClient:
     async def get_current_price(self, symbol: str) -> float:
         if not self.token: await self.authenticate()
         data = await self._request("GET", f"/api/v1/prices?symbols={symbol}", "MARKET_DATA", headers=self._get_headers())
-        result = data.get("result", [])
+        result = data.get("result") or []
         if not result: return 0.0
         price_raw = result[0].get("lastPrice")
         return float(price_raw) if price_raw is not None else 0.0
@@ -329,12 +332,13 @@ class TossApiClient:
     async def get_orderbook(self, symbol: str) -> dict:
         if not self.token: await self.authenticate()
         data = await self._request("GET", f"/api/v1/orderbook?symbol={symbol}", "MARKET_DATA", headers=self._get_headers())
-        return data.get("result", {})
+        return data.get("result") or {}
 
     async def get_orders(self, status: str, symbol: str) -> list:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/orders?status={status}&symbol={symbol}", "ORDER_HISTORY", headers=self._get_headers(requires_account=True))
-        return data.get("result", {}).get("orders", [])
+        res_dict = data.get("result") or {}
+        return res_dict.get("orders") or []
 
     async def cancel_order(self, order_id: str):
         if not self.account_seq: await self.fetch_account_seq()
@@ -343,7 +347,7 @@ class TossApiClient:
     async def get_order_detail(self, order_id: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/orders/{order_id}", "ORDER_HISTORY", headers=self._get_headers(requires_account=True))
-        return data.get("result", {})
+        return data.get("result") or {}
 
     async def create_order(self, symbol: str, side: str, order_type: str, quantity: float, price: str, client_order_id: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
@@ -382,4 +386,4 @@ class TossApiClient:
     async def get_conditional_order_detail(self, cond_order_id: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/conditional-orders/{cond_order_id}", "CONDITIONAL_ORDER_HISTORY", headers=self._get_headers(requires_account=True))
-        return data.get("result", {})
+        return data.get("result") or {}
