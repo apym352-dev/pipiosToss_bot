@@ -9,6 +9,7 @@
 # MODIFIED: 취약점 1 완벽 방어 - 통신 실패 및 결측치 발생 시에도 타임스탬프 원자적 갱신으로 60초 TTL 쿨다운 강제 (IP 밴 차단 락온)
 # MODIFIED: 치명적 취약점 방어 - NQ=F 세션 시프트 직후 데이터 프레임 증발 시 발생하는 IndexError 원천 소각 (df.empty 검증망 주입)
 # MODIFIED: NQ=F 1d 자정 롤오버 왜곡 방어 - 45분 갭 필터링 경계값 원자적 하드 락온 (>= 45분)
+# MODIFIED: 무한 예외 스팸 방어 - aVWAP 연산 시 캔들 데이터 결측치(KeyError) 발생으로 인한 1.5초 루프 붕괴 원천 차단 (컬럼 선행 프로빙 결속)
 
 import os
 import json
@@ -158,7 +159,10 @@ class AVWAPEngine:
         df.set_index('timestamp', inplace=True)
         df.sort_index(ascending=True, inplace=True)
         
+        # MODIFIED: 결측치(KeyError)로 인한 1.5초 주기 무한 예외 스팸 폭탄을 원자적으로 방어 (컬럼 선행 프로빙)
         for col in ['highPrice', 'lowPrice', 'closePrice', 'volume']:
+            if col not in df.columns:
+                df[col] = 0.0
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
         session_df = df[df.index >= session_start_est]

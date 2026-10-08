@@ -8,6 +8,7 @@
 # MODIFIED: 19:00 EST 기점 논리적 거래일(Logical Trading Day) 롤오버 파이프라인 결속 (야간 데이마켓 휴장일 오인 차단)
 # MODIFIED: 초과 Case 62 - 토스 인증 모듈(_do_authenticate) HTTP 상태 코드 검증망 주입을 통한 JSON 파싱 붕괴(HTML 응답) 원천 차단
 # NEW: 초과 Case 69 - API Null 페이로드 응답 시 단락 평가(or)를 통한 AttributeError 체이닝 붕괴 완벽 방어 락온 전면 주입
+# MODIFIED: 치명적 엣지 케이스 방어 - 비표준 에러 문자열 페이로드 응답 시 발생하는 AttributeError('str' object has no attribute 'get') 시스템 패닉 원천 봉쇄
 
 import asyncio
 import aiohttp
@@ -119,8 +120,13 @@ class TossApiClient:
                         if resp.status >= 400:
                             err_text = await resp.text()
                             try:
+                                # MODIFIED: 비표준 에러 응답 시 AttributeError 발생 차단 및 이중 캐치망 결속
                                 err_json = json.loads(err_text)
-                                err_msg = err_json.get("error", {}).get("message", err_text)
+                                err_obj = err_json.get("error", {})
+                                if isinstance(err_obj, dict):
+                                    err_msg = err_obj.get("message", err_text)
+                                else:
+                                    err_msg = err_json.get("error_description", str(err_obj))
                                 safe_err = html.escape(str(err_msg))
                             except Exception:
                                 safe_err = html.escape(err_text)
@@ -173,7 +179,7 @@ class TossApiClient:
     async def fetch_account_seq(self):
         if not self.token: await self.authenticate()
         data = await self._request("GET", "/api/v1/accounts", "ACCOUNT", headers=self._get_headers())
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}  # 단락 평가 유지
         accounts = data.get("result") or []
         for acc in accounts:
             if acc.get("accountType") == "BROKERAGE":
@@ -186,13 +192,13 @@ class TossApiClient:
         if before:
             endpoint += f"&before={before.replace('+', '%2B')}"
         data = await self._request("GET", endpoint, "MARKET_DATA_CHART", headers=self._get_headers())
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         return data.get("result") or {}
 
     async def get_symbol_holdings_detail(self, symbol: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/holdings?symbol={symbol}", "ASSET", headers=self._get_headers(requires_account=True))
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         res_dict = data.get("result") or {}
         items = res_dict.get("items") or []
         
@@ -213,7 +219,7 @@ class TossApiClient:
     async def get_usd_buying_power(self) -> float:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", "/api/v1/buying-power?currency=USD", "ORDER_INFO", headers=self._get_headers(requires_account=True))
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         res_dict = data.get("result") or {}
         bp_raw = res_dict.get("cashBuyingPower")
         return float(bp_raw) if bp_raw is not None else 0.0
@@ -241,7 +247,7 @@ class TossApiClient:
             if not self.token: await self.authenticate()
             endpoint = f"/api/v1/market-calendar/US?date={est_today_str}"
             data = await self._request("GET", endpoint, "MARKET_INFO", headers=self._get_headers())
-            data = data or {}  # NEW: 단락 평가 주입
+            data = data or {}
             result_data = data.get("result") or {}
             
             for day_key in ["today", "nextBusinessDay", "previousBusinessDay"]:
@@ -329,7 +335,7 @@ class TossApiClient:
     async def get_current_price(self, symbol: str) -> float:
         if not self.token: await self.authenticate()
         data = await self._request("GET", f"/api/v1/prices?symbols={symbol}", "MARKET_DATA", headers=self._get_headers())
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         result = data.get("result") or []
         if not result: return 0.0
         price_raw = result[0].get("lastPrice")
@@ -338,13 +344,13 @@ class TossApiClient:
     async def get_orderbook(self, symbol: str) -> dict:
         if not self.token: await self.authenticate()
         data = await self._request("GET", f"/api/v1/orderbook?symbol={symbol}", "MARKET_DATA", headers=self._get_headers())
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         return data.get("result") or {}
 
     async def get_orders(self, status: str, symbol: str) -> list:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/orders?status={status}&symbol={symbol}", "ORDER_HISTORY", headers=self._get_headers(requires_account=True))
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         res_dict = data.get("result") or {}
         return res_dict.get("orders") or []
 
@@ -355,7 +361,7 @@ class TossApiClient:
     async def get_order_detail(self, order_id: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/orders/{order_id}", "ORDER_HISTORY", headers=self._get_headers(requires_account=True))
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         return data.get("result") or {}
 
     async def create_order(self, symbol: str, side: str, order_type: str, quantity: float, price: str, client_order_id: str) -> dict:
@@ -370,7 +376,7 @@ class TossApiClient:
             "timeInForce": "DAY"
         }
         data = await self._request("POST", "/api/v1/orders", "ORDER", headers=self._get_headers(requires_account=True), json_data=payload)
-        return data or {}  # NEW: 단락 평가 방어
+        return data or {}
 
     async def create_conditional_order(self, symbol: str, quantity: int, price: str, client_order_id: str, expire_date: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
@@ -388,7 +394,7 @@ class TossApiClient:
             }
         }
         data = await self._request("POST", "/api/v1/conditional-orders", "CONDITIONAL_ORDER", headers=self._get_headers(requires_account=True), json_data=payload)
-        return data or {}  # NEW: 단락 평가 방어
+        return data or {}
 
     async def cancel_conditional_order(self, cond_order_id: str):
         if not self.account_seq: await self.fetch_account_seq()
@@ -397,5 +403,5 @@ class TossApiClient:
     async def get_conditional_order_detail(self, cond_order_id: str) -> dict:
         if not self.account_seq: await self.fetch_account_seq()
         data = await self._request("GET", f"/api/v1/conditional-orders/{cond_order_id}", "CONDITIONAL_ORDER_HISTORY", headers=self._get_headers(requires_account=True))
-        data = data or {}  # NEW: 단락 평가 주입
+        data = data or {}
         return data.get("result") or {}

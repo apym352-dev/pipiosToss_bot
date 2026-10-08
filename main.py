@@ -55,6 +55,10 @@
 # MODIFIED: 미체결 주문 검증망 내 openorders 오타(NameError) 원자적 교체 완료 (open_orders)
 # MODIFIED: 치명적 M_DUMP 허위 알림(Swallowed Notification) 붕괴 완벽 수술 완료 (is_new_dump 플래그 사전 추출 결속)
 # NEW: 타임아웃 기반 BUY 무한 예외 스팸 폭탄(Infinite Spam) 방어용 last_buy_error_msg 전역 억제 파이프라인 결속 완료
+# MODIFIED: 취약점 완벽 방어 - 수동 OFF 시 조건주문 파기 락온 중 CancelledError 발생 시 notify_msg UnboundLocalError 시스템 패닉 원천 봉쇄
+# MODIFIED: 취약점 완벽 방어 - 익절 덫 장전 성공 시 last_trap_error_msg 원자적 초기화 주입을 통한 동일 에러 알림 무한 침묵 버그 전면 소각
+# MODIFIED: 치명적 엣지 케이스 방어 - 매수 주문 40틱 지연(RBUY) 및 자동 취소 시 '수동 매도 청산'으로 허위 타전되는 False Positive 텔레그램 스팸 버그 완벽 수술(is_buy_cancel 판별망 결속)
+# MODIFIED: 치명적 엣지 케이스 방어 - 조건주문 덫 생존 프로빙 404 외 기타 통신 오류 시 시스템 패닉 및 침묵(Silent Swallow) 현상 방어용 폴백 로그 강제 주입
 
 import sys
 import os
@@ -623,8 +627,11 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 except Exception as e:
                                     print(f"🚨 [고아 덫 파기 방어 {symbol}] 404 무시(이미 취소/실행됨) 또는 통신 오류: {e}", flush=True)
 
-                            is_take_profit_exit = bool(target_sell_price > 0.0 or cond_order_id) and not is_moc_time and not is_trap_survived
-                            is_manual_exit = not is_take_profit_exit and not is_moc_time
+                            # MODIFIED: 매수 취소 시 '수동 매도 청산'으로 타전되는 허위 익절(False Positive) 스팸 방어를 위한 상태망 결속
+                            is_trap_set = bool(target_sell_price > 0.0 or cond_order_id)
+                            is_take_profit_exit = is_trap_set and not is_moc_time and not is_trap_survived
+                            is_manual_exit = is_trap_set and not is_take_profit_exit and not is_moc_time
+                            is_buy_cancel_exit = not is_trap_set
                             is_moc_exit = is_moc_time
 
                             await AssassinLedger.save_state(symbol, price=0.0, target_sell_price=0.0, buy_order_id="", cond_order_id="", is_session_done=True, entry_session="", entry_time=0.0)
@@ -633,7 +640,9 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                             cond_order_id = ""
                             is_session_done = True
                             
-                            if is_moc_exit:
+                            if is_buy_cancel_exit:
+                                print(f"🧹 [매수 취소/실패 {symbol}] 덫 장전 이력 부재. 허위 익절 타전 억제 및 장부 초기화 완료.", flush=True)
+                            elif is_moc_exit:
                                 await notify_tg(f"🛑 <b>[aVWAP {symbol}] MOC 강제 덤핑 청산 완료</b>\n▫️ 잔고 0주 (제로-오버나이트 락온){pnl_str}")
                             elif is_take_profit_exit:
                                 await notify_tg(f"🎉 <b>[aVWAP {symbol}] 거래 종료 (퇴근 락온 완료)</b>\n▫️ 잔고 0주 (조건주문 체결 확인){pnl_str}\n▫️ 당일 신규 진입 권한 영구 소각")
@@ -755,6 +764,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                 if cond_order_id:
                     if not in_memory_ordering_lock[symbol]:
                         in_memory_ordering_lock[symbol] = True
+                        notify_msg = ""
                         try:
                             await client.cancel_conditional_order(cond_order_id)
                             notify_msg = f"🛑 <b>[aVWAP {symbol}] 수동 오버나이트(가동 OFF) 전환</b>\n▫️ 조치: 기장전된 익절 조건주문 안전 파기 완료"
@@ -768,7 +778,8 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         finally:
                             await AssassinLedger.save_state(symbol, cond_order_id="", target_sell_price=0.0)
                             print(f"🛑 [수동 오버나이트 {symbol}] 가동 OFF 감지. 익절 조건주문 파기 확증 완료.", flush=True)
-                            await notify_tg(notify_msg)
+                            if notify_msg:
+                                await notify_tg(notify_msg)
                             cond_order_id = ""
                             target_sell_price = 0.0
                             await asyncio.sleep(0.5)
@@ -790,6 +801,9 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         await notify_tg(f"🚨 <b>[aVWAP {symbol}] 유령 덫 증발 감지</b>\n▫️ 사유: 서버 404 (수동 취소 추정)\n▫️ 조치: 덫 파기 및 자동 재장전 가동")
                         await AssassinLedger.save_state(symbol, cond_order_id="")
                         cond_order_id = ""
+                    else:
+                        # MODIFIED: 조건주문 덫 감시망 통신 오류 시 시스템 패닉 및 침묵 현상 방어용 폴백 로그 강제 주입
+                        print(f"🚨 [조건주문 유령 덫 감시 방어 {symbol}] {e}", flush=True)
             
             if holdings_qty > 0 and not has_open_sell and not has_open_buy and not cond_order_id and not in_memory_ordering_lock[symbol] and is_active:
                 calculated_target = target_sell_price
@@ -862,6 +876,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                             await notify_tg(f"🟢 <b>[aVWAP {symbol}] 포지션 조건주문 덫 재장전</b>\n▫️ 유지 평단가: ${avg_price:.2f}\n▫️ 익절 덫: ${calculated_target:.2f}\n▫️ 수량: {trap_qty}주")
                         
                         idempotency_keys[symbol]["TRAP"] = None
+                        last_trap_error_msg = ""
                     except Exception as e:
                         err_str = str(e)
                         if any(code in err_str for code in ["400", "422", "404", "409", "401", "403"]):
