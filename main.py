@@ -59,6 +59,7 @@
 # MODIFIED: 취약점 완벽 방어 - 익절 덫 장전 성공 시 last_trap_error_msg 원자적 초기화 주입을 통한 동일 에러 알림 무한 침묵 버그 전면 소각
 # MODIFIED: 치명적 엣지 케이스 방어 - 매수 주문 40틱 지연(RBUY) 및 자동 취소 시 '수동 매도 청산'으로 허위 타전되는 False Positive 텔레그램 스팸 버그 완벽 수술(is_buy_cancel 판별망 결속)
 # MODIFIED: 치명적 엣지 케이스 방어 - 조건주문 덫 생존 프로빙 404 외 기타 통신 오류 시 시스템 패닉 및 침묵(Silent Swallow) 현상 방어용 폴백 로그 강제 주입
+# NEW: 초과 Case 64 & 67 방어망 결속 - 부분 체결 시 토스 API 동기화 지연으로 인한 덫 수량 누락 원천 차단 및 시드(Budget) 기반 전량 락온 결속
 
 import sys
 import os
@@ -627,7 +628,6 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 except Exception as e:
                                     print(f"🚨 [고아 덫 파기 방어 {symbol}] 404 무시(이미 취소/실행됨) 또는 통신 오류: {e}", flush=True)
 
-                            # MODIFIED: 매수 취소 시 '수동 매도 청산'으로 타전되는 허위 익절(False Positive) 스팸 방어를 위한 상태망 결속
                             is_trap_set = bool(target_sell_price > 0.0 or cond_order_id)
                             is_take_profit_exit = is_trap_set and not is_moc_time and not is_trap_survived
                             is_manual_exit = is_trap_set and not is_take_profit_exit and not is_moc_time
@@ -802,14 +802,15 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                         await AssassinLedger.save_state(symbol, cond_order_id="")
                         cond_order_id = ""
                     else:
-                        # MODIFIED: 조건주문 덫 감시망 통신 오류 시 시스템 패닉 및 침묵 현상 방어용 폴백 로그 강제 주입
                         print(f"🚨 [조건주문 유령 덫 감시 방어 {symbol}] {e}", flush=True)
             
             if holdings_qty > 0 and not has_open_sell and not has_open_buy and not cond_order_id and not in_memory_ordering_lock[symbol] and is_active:
                 calculated_target = target_sell_price
-                trap_qty = holdings_qty
                 
                 avg_price = float(holdings_detail.get('avg_price', 0.0))
+                if avg_price <= 0.0:
+                    avg_price = last_buy_price
+
                 is_rearm = True
                 trap_tag = "" 
                 skip_trap = False
@@ -824,20 +825,27 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                 skip_trap = True
                             elif status in ["FILLED", "CANCELED", "REJECTED"]:
                                 is_rearm = False
-                        except Exception:
-                            pass
+                            else:
+                                skip_trap = True
+                        except Exception as e:
+                            print(f"🚨 [덫 대기망 방어 {symbol}] 주문 상태 프로빙 실패. 통신 에러 자체 흡수 및 덫 장전 보류: {e}", flush=True)
+                            skip_trap = True
                     else:
                         is_rearm = False
 
                     if skip_trap:
                         continue
 
-                    if avg_price <= 0.0:
-                        avg_price = last_buy_price
-
                     if avg_price > 0.0:
                         calculated_target = math.ceil(avg_price * 1.01 * 100) / 100.0
                         trap_tag = "+1.0%" if entry_session == "preMarket" and buy_order_id else "수동개입(+1.0%)"
+
+                # MODIFIED: 초과 Case 64 & 67 방어망 결속 - 부분 체결 시 토스 API 동기화 지연으로 인한 덫 수량 누락 원천 차단
+                # 시드(budget) 기반 목표 수량을 역산하여 덫 장전 수량(Target Quantity)으로 전량 락온
+                trap_qty = holdings_qty
+                if buy_order_id and avg_price > 0.0:
+                    expected_target_qty = int(math.floor(budget / avg_price))
+                    trap_qty = max(holdings_qty, expected_target_qty)
 
                 if calculated_target > 0.0 and trap_qty > 0 and not skip_trap:
                     in_memory_ordering_lock[symbol] = True
