@@ -2,36 +2,10 @@
 # FILE: tg_router.py
 # 목적: SOXL, SOXS 듀얼 상태 제어 UI, 스케줄/명령어 라우팅 및 방어망 결속
 # =====================================================================
-# MODIFIED: 장마감 1분 전(15:59)부터 3분간 1.5초 간격 MOC 덤핑 스케줄 텍스트 압축 (정규장 단어 소각)
-# MODIFIED: 복잡한 3단 하향망 UI 렌더링을 폐기하고 1.0% 고정 팩트 렌더링 락온
-# NEW: 초과 Case 50 - 5MA 기반 동적 예상 저가/고가(예상 밴드) 연산 및 팩트/예상 분리 렌더링 락온
-# MODIFIED: 암살자 타임쉴드 UI 렌더링 04:07 절대쉴드, 04:30 동적쉴드(40틱)로 롤백 락온
-# NEW: 3분(180초) 교차 타임쉴드 대기 상태 UI 렌더링 파이프라인 결속
-# MODIFIED: /start 명령어 및 모든 라우터 객체 속성 오타(from_user) 원자적 교체 및 AttributeError 전면 방어망 결속
-# NEW: 모든 인라인 버튼 콜백(CallbackQuery) 핸들러에 관리자 권한(ADMIN_CHAT_ID) 검증망 하드 락온
-# MODIFIED: 초과 Case 56 - 04:07 EST 절대 타임쉴드 렌더링 전면 폐기 및 04:00부터 40틱 동적쉴드 렌더링 즉각 반영
-# MODIFIED: 레이더 관제탑 5MA 진폭 표출 시 어제(Yesterday) 단일 확정 진폭 동시 연산 및 UI 병기 락온
-# MODIFIED: 주말/휴장일 5MA 및 어제 진폭(Yesterday Amp) 동적 시프트 방어 (c0_dt < today_dt 검증망 주입)
-# NEW: 초과 Case 56 - 어제 진폭(Yesterday Amp) 격차 기반 상승/하락/횡보장 동적 판별 알고리즘 및 UI 렌더링 락온
-# MODIFIED: 초과 Case 57 - 암살자 PRE_ONLY 헌법 준수 및 주말 정규장 시간대 "REG대기" 오표출 영구 소각 ("장외대기" 락온)
-# MODIFIED: 주말/휴장일 레이더 UI 정규장 오표출 방어를 위한 동적 캘린더 원자적 교차 검증망 주입
-# NEW: 초과 Case 58 - 세션별 당일 실시간 진폭 격차 기반 실시간 장세(상승/하락/횡보) 동적 판별 및 관제탑 UI 렌더링 결속
-# MODIFIED: 초과 Case 56 & 58 - 갭-다운/상승 왜곡 방어용 전일 종가 대비 실질 등락률(True Return) 기반 장세 판별망 교체 락온
-# MODIFIED: 초과 Case 59 - 정규장 마감(16:00 EST) 이후 당일 확정 캔들 5MA 증발(시프트 왜곡) 방어망 락온
-# MODIFIED: 초과 Case 60 - 통합 지시서 전일 종가(prev_close) 동적 캘린더 추출 방어망 주입
-# MODIFIED: 초과 Case 61 - 데이장(19:00 EST 이후) 1d 캔들 롤오버 시 실시간 미완성 캔들 오염(어제 진폭 휩소) 완벽 방어를 위한 3단 동적 시프트 락온
-# MODIFIED: Case 13 - 04:06 EST 절대 타임쉴드 구간 '절대쉴드' UI 렌더링 락온 결속
-# REMOVED: 매크로 위험 감지망 전면 소각에 따른 MACRO_BLOCKED 분기 렌더링 영구 소각
-# NEW: 나스닥 100 선물지수(NQ=F) 실시간 관제 UI 렌더링 및 비동기 수집망 결속
-# MODIFIED: 관제탑 UI NQ=F 실시간 진폭(Amplitude) 연산 및 렌더링 결속
-# NEW: 관제탑 UI NQ=F 저가 대비 현재가 실시간 반등 진폭(nq_current_amp) 연산 및 2줄 분리 렌더링 결속
-# MODIFIED: NQ=F yfinance 데이터 period="1d" 자정 증발 한계 극복을 위한 5d 스코프 확장 및 45분 갭 기반 논리 세션 시프트 락온
-# MODIFIED: 취약점 1 방어 - quant_engine.MacroDataCache 캐시 저장소 연동으로 NQ=F 다중 호출 방어 및 IP 밴 락온 결속
-# NEW: 취약점 1 방어 - 나스닥 100 선물(NQ=F) 기반 레버리지 실시간 기대 진폭(x5.0) 동적 연산 및 UI 분리 렌더링 하드 락온
-# MODIFIED: 취약점 2 방어 - dayMarket 세션(19:00~03:59 EST) 진입 시 '장외대기' 오표출 소각 및 '시스템대기' 원자적 팩트 렌더링 결속
+# MODIFIED: 조건주문(Conditional Order) 낡은 의존성 전면 소각 및 지정가 매도 튜플 인덱스 원자적 재매핑 결속
+# MODIFIED: /reset 명령어 타격 시 증축된 NQ=F 지수 및 매도 주문 식별자 등 11개 필드 전역 영구 소각 락온
 # MODIFIED: FSMContext 상태 안전망 결속 및 클래스 정적 변수 동시성 붕괴 방어
-# MODIFIED: time 모듈 전역 스코프 전진 배치를 통한 인라인 임포트 병목 소각 최적화 락온
-# MODIFIED: 5MA 전일 실질 등락률 연산 결측치 ZeroDivision 방어를 위한 스코프 전진 배치 및 원자적 검증망 락온
+# MODIFIED: 초과 Case 13 - 04:00~04:06 EST 구간 UI 렌더링 '절대쉴드(휩소 덫 대기)' 반영
 
 import os
 import html
@@ -306,8 +280,11 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     pre_trend_msg = get_realtime_trend(sess_l['pre_body'], sess_s['pre_body'], sess_l['pre_amp'], sess_s['pre_amp'])
     reg_trend_msg = get_realtime_trend(sess_l['reg_body'], sess_s['reg_body'], sess_l['reg_amp'], sess_s['reg_amp'])
 
-    _, budget_l, _, is_done_l, is_active_l, _, _, _, entry_l, entry_time_l = await AssassinLedger.get_state("SOXL")
-    _, budget_s, _, is_done_s, is_active_s, _, _, _, entry_s, entry_time_s = await AssassinLedger.get_state("SOXS")
+    state_l = await AssassinLedger.get_state("SOXL")
+    state_s = await AssassinLedger.get_state("SOXS")
+    
+    budget_l, is_done_l, is_active_l, entry_l, entry_time_l = state_l[1], state_l[3], state_l[4], state_l[7], state_l[8]
+    budget_s, is_done_s, is_active_s, entry_s, entry_time_s = state_s[1], state_s[3], state_s[4], state_s[7], state_s[8]
 
     def build_compact_status(symbol_short, is_active, budget, is_done, current_session, est_time, qty, entry_session, my_entry_time, other_entry_time):
         state_flag = "ON" if is_active else "OFF"
@@ -323,7 +300,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
                 current_time_for_ui = time.time()
                 if est_time.hour == 4:
                     if est_time.minute <= 6:
-                        state_text = "절대쉴드"
+                        state_text = "절대쉴드(휩소 덫 대기)"
                     elif est_time.minute < 30:
                         state_text = "동적쉴드"
                     elif other_entry_time > 0 and current_time_for_ui - other_entry_time < 180.0:
@@ -428,7 +405,7 @@ async def build_sync_board() -> str:
     async def get_symbol_sync_data(symbol):
         state = await AssassinLedger.get_state(symbol)
         budget = state[1]
-        entry_session = state[8]
+        entry_session = state[7]
         
         hold = await api_client.get_symbol_holdings_detail(symbol)
         qty = hold.get('qty', 0.0)
@@ -548,8 +525,11 @@ async def build_sync_board() -> str:
     return text
 
 async def build_settlement_board() -> tuple[str, InlineKeyboardMarkup]:
-    _, budget_l, _, _, is_active_l, _, _, _, _, _ = await AssassinLedger.get_state("SOXL")
-    _, budget_s, _, _, is_active_s, _, _, _, _, _ = await AssassinLedger.get_state("SOXS")
+    state_l = await AssassinLedger.get_state("SOXL")
+    state_s = await AssassinLedger.get_state("SOXS")
+    
+    budget_l, is_active_l = state_l[1], state_l[4]
+    budget_s, is_active_s = state_s[1], state_s[4]
 
     state_l_str = "🟢 ON" if is_active_l else "🔴 OFF"
     state_s_str = "🟢 ON" if is_active_s else "🔴 OFF"
@@ -743,7 +723,7 @@ async def cmd_reset(message: types.Message, state: FSMContext):
     ])
     text = (
         "⚠️ <b>[듀얼 장부 동시 초기화]</b>\n\n"
-        "경고: SOXL 및 SOXS의 로컬 장부(평단가, 목표가, 주문 ID, 세 세션 락)를 100% 영구 소각하고 0점으로 원자적 초기화를 수행합니다.\n"
+        "경고: SOXL 및 SOXS의 로컬 장부(평단가, 목표가, 매도/매수 주문 ID, NQ 기록, 세션 락)를 100% 영구 소각하고 0점으로 원자적 초기화를 수행합니다.\n"
         "진행하시겠습니까?"
     )
     try:
@@ -759,8 +739,8 @@ async def process_execute_dual_reset(callback_query: types.CallbackQuery, state:
     print(f"💬 [TG 콜백 수신] execute_dual_reset (User: {user.id})", flush=True)
     await state.clear()
     try:
-        await AssassinLedger.save_state("SOXL", price=0.0, target_sell_price=0.0, buy_order_id="", cond_order_id="", is_session_done=False, entry_session="", entry_time=0.0)
-        await AssassinLedger.save_state("SOXS", price=0.0, target_sell_price=0.0, buy_order_id="", cond_order_id="", is_session_done=False, entry_session="", entry_time=0.0)
+        await AssassinLedger.save_state("SOXL", price=0.0, target_sell_price=0.0, buy_order_id="", sell_order_id="", is_session_done=False, entry_session="", entry_time=0.0, nq_entry_price=0.0, nq_entry_amp=0.0)
+        await AssassinLedger.save_state("SOXS", price=0.0, target_sell_price=0.0, buy_order_id="", sell_order_id="", is_session_done=False, entry_session="", entry_time=0.0, nq_entry_price=0.0, nq_entry_amp=0.0)
         
         await callback_query.answer("✅ 듀얼 장부 영구 소각 완료", show_alert=True)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
