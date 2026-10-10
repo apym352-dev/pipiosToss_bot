@@ -1,11 +1,9 @@
 # =====================================================================
 # FILE: tg_router.py
-# 목적: SOXL, SOXS 듀얼 상태 제어 UI, 스케줄/명령어 라우팅 및 방어망 결속
+# 목적: SOXS 단독 상태 제어 UI, 스케줄/명령어 라우팅 및 방어망 결속
 # =====================================================================
-# MODIFIED: 조건주문(Conditional Order) 낡은 의존성 전면 소각 및 지정가 매도 튜플 인덱스 원자적 재매핑 결속
-# MODIFIED: /reset 명령어 타격 시 증축된 NQ=F 지수 및 매도 주문 식별자 등 11개 필드 전역 영구 소각 락온
-# MODIFIED: FSMContext 상태 안전망 결속 및 클래스 정적 변수 동시성 붕괴 방어
-# MODIFIED: 초과 Case 13 - 04:00~04:06 EST 구간 UI 렌더링 '절대쉴드(휩소 덫 대기)' 반영
+# MODIFIED: SOXL UI 및 로직 100% 소각 (SOXS 100% 단일 종목 렌더링)
+# MODIFIED: 04:00~09:29 '절대쉴드(04:01 덫 대기 유지)' 텍스트 렌더링 주입
 
 import os
 import html
@@ -45,17 +43,17 @@ def get_main_menu_text() -> str:
         "➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
         "🔹 17:00: 🧹 정산 스캔 및 시스템 대기\n"
         "🔹 04:00: 🌅 프리장 레이더 스캔 \n"
-        "      (04:06 절대쉴드 / 04:30 동적쉴드)\n"
+        "      (04:01 덫/즉각 타격 분기망 가동)\n"
         "🔹 09:30: 🔥 정규장 VWAP 스캔\n"
-        "      (신규 진입 셧다운)\n"
+        "      (신규 진입 셧다운 및 덫 파기)\n"
         "🔹 15:59: 🛑 MOC 덤핑 (1.5초 주기)\n\n"
         "🛠 <b>[ 핵심 명령어 ]</b>\n"
         "▶️ /avwap : 🔫 트레이딩 레이더 관제탑\n"
         "▶️ /sync : 📜 통합 지시서 및 장부 동기화\n"
         "▶️ /settlement : ⚙️ 통합 전술 제어반\n\n"
-        "⚠️ /reset : 🧹 롱/숏 장부 초기화\n\n"
+        "⚠️ /reset : 🧹 단일 장부(SOXS) 초기화\n\n"
         "⚠️ /update : 🚀 시스템 자가 업데이트\n\n"
-        "🌙 <b>오버나이트를 원할 경우 [통합 전술 제어반]에서 해당 종목 가동을 OFF 해주세요.</b>"
+        "🌙 <b>오버나이트를 원할 경우 [통합 전술 제어반]에서 가동을 OFF 해주세요.</b>"
     )
 
 @router.message(Command("start"))
@@ -154,10 +152,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     
     lev_expected_amp = nq_amp * 5.0
 
-    price_l = await api_client.get_current_price("SOXL")
     price_s = await api_client.get_current_price("SOXS")
-    
-    hold_l = await api_client.get_symbol_holdings_detail("SOXL")
     hold_s = await api_client.get_symbol_holdings_detail("SOXS")
 
     async def fetch_5ma_amp(symbol):
@@ -215,6 +210,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
         except Exception:
             return 0.0, 0.0, 0.0
 
+    # UI 렌더링 목적으로만 SOXL 데이터를 백그라운드 추출 (어제 진폭 격차 판별용 - Case 56)
     amp_l, yest_amp_l, yest_return_l = await fetch_5ma_amp("SOXL")
     amp_s, yest_amp_s, yest_return_s = await fetch_5ma_amp("SOXS")
     
@@ -222,9 +218,9 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     if diff_return <= 0.3:
         trend_msg = "▫️ ⚔️ <b>횡보/휩소장 (방향성 상실)</b> : 전일 실질 등락률 격차 미미 (극심한 공방)"
     elif yest_return_l > yest_return_s:
-        trend_msg = "▫️ 🐂 <b>상승장 (SOXL 승리)</b> : SOXL 전일 등락률 우위 (숏의 상승세 붕괴)"
+        trend_msg = "▫️ 🐂 <b>상승장 (SOXL 승리)</b> : 롱(SOXL) 전일 등락률 우위 (시장 강세)"
     else:
-        trend_msg = "▫️ 🐻 <b>하락장 (SOXS 승리)</b> : SOXS 전일 등락률 우위 (롱의 상승세 붕괴)"
+        trend_msg = "▫️ 🐻 <b>하락장 (SOXS 승리)</b> : 숏(SOXS) 전일 등락률 우위 (시장 약세)"
 
     async def fetch_session_stats(symbol):
         all_candles = []
@@ -250,43 +246,32 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
         return await asyncio.to_thread(parse_session_data, all_candles, session_start_est)
 
     if session_name_ui == "dayMarket":
-        sess_l = {"pre_h": 0.0, "pre_l": 0.0, "pre_amp": 0.0, "pre_vwap": 0.0, "pre_body": 0.0, "reg_h": 0.0, "reg_l": 0.0, "reg_amp": 0.0, "reg_vwap": 0.0, "reg_body": 0.0}
         sess_s = {"pre_h": 0.0, "pre_l": 0.0, "pre_amp": 0.0, "pre_vwap": 0.0, "pre_body": 0.0, "reg_h": 0.0, "reg_l": 0.0, "reg_amp": 0.0, "reg_vwap": 0.0, "reg_body": 0.0}
     else:
-        sess_l = await fetch_session_stats("SOXL")
         sess_s = await fetch_session_stats("SOXS")
-
-    pre_exp_l_l = sess_l['pre_h'] * (1 - amp_l / 100) if sess_l['pre_h'] > 0 else 0.0
-    pre_exp_h_l = sess_l['pre_l'] * (1 + amp_l / 100) if sess_l['pre_l'] > 0 else 0.0
-    reg_exp_l_l = sess_l['reg_h'] * (1 - amp_l / 100) if sess_l['reg_h'] > 0 else 0.0
-    reg_exp_h_l = sess_l['reg_l'] * (1 + amp_l / 100) if sess_l['reg_l'] > 0 else 0.0
 
     pre_exp_l_s = sess_s['pre_h'] * (1 - amp_s / 100) if sess_s['pre_h'] > 0 else 0.0
     pre_exp_h_s = sess_s['pre_l'] * (1 + amp_s / 100) if sess_s['pre_l'] > 0 else 0.0
     reg_exp_l_s = sess_s['reg_h'] * (1 - amp_s / 100) if sess_s['reg_h'] > 0 else 0.0
     reg_exp_h_s = sess_s['reg_l'] * (1 + amp_s / 100) if sess_s['reg_l'] > 0 else 0.0
 
-    def get_realtime_trend(body_long, body_short, amp_long, amp_short):
-        if amp_long <= 0.0 and amp_short <= 0.0:
+    def get_realtime_trend_single(body_short, amp_short):
+        if amp_short <= 0.0:
             return "대기 (데이터 수집 중)"
-        diff = abs(body_long - body_short)
-        if diff <= 0.3:
+        if abs(body_short) <= 0.3:
             return "⚔️ 횡보/휩소장 (세션 방향성 상실)"
-        elif body_long > body_short:
-            return "🐂 상승장 (SOXL 세션 우위)"
+        elif body_short < 0:
+            return "🐂 상승장 (SOXS 하락 우위)"
         else:
-            return "🐻 하락장 (SOXS 세션 우위)"
+            return "🐻 하락장 (SOXS 상승 우위)"
 
-    pre_trend_msg = get_realtime_trend(sess_l['pre_body'], sess_s['pre_body'], sess_l['pre_amp'], sess_s['pre_amp'])
-    reg_trend_msg = get_realtime_trend(sess_l['reg_body'], sess_s['reg_body'], sess_l['reg_amp'], sess_s['reg_amp'])
+    pre_trend_msg = get_realtime_trend_single(sess_s['pre_body'], sess_s['pre_amp'])
+    reg_trend_msg = get_realtime_trend_single(sess_s['reg_body'], sess_s['reg_amp'])
 
-    state_l = await AssassinLedger.get_state("SOXL")
     state_s = await AssassinLedger.get_state("SOXS")
-    
-    budget_l, is_done_l, is_active_l, entry_l, entry_time_l = state_l[1], state_l[3], state_l[4], state_l[7], state_l[8]
     budget_s, is_done_s, is_active_s, entry_s, entry_time_s = state_s[1], state_s[3], state_s[4], state_s[7], state_s[8]
 
-    def build_compact_status(symbol_short, is_active, budget, is_done, current_session, est_time, qty, entry_session, my_entry_time, other_entry_time):
+    def build_compact_status(symbol_short, is_active, budget, is_done, current_session, est_time, qty, entry_session):
         state_flag = "ON" if is_active else "OFF"
         
         if not is_active:
@@ -297,28 +282,19 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
             state_text = "타격완료"
         else:
             if current_session == "preMarket":
-                current_time_for_ui = time.time()
-                if est_time.hour == 4:
-                    if est_time.minute <= 6:
-                        state_text = "절대쉴드(휩소 덫 대기)"
-                    elif est_time.minute < 30:
-                        state_text = "동적쉴드"
-                    elif other_entry_time > 0 and current_time_for_ui - other_entry_time < 180.0:
-                        state_text = "교차쉴드"
-                    else:
-                        state_text = "PRE대기"
+                if est_time.hour == 4 and est_time.minute == 0:
+                    state_text = "PRE대기 (데이터 수집중)"
                 else:
-                    state_text = "PRE대기"
+                    state_text = "절대쉴드(04:01 덫 대기 유지)"
             elif current_session == "dayMarket":
                 state_text = "시스템대기"
             else:
                 state_text = "장외대기"
 
-        emoji = "🐂" if symbol_short == "SOXL" else "🐻"
+        emoji = "🐻"
         return f"{emoji} <b>{symbol_short}</b> <code>[{state_flag}]</code> {state_text} | <code>${budget:.0f}</code>"
 
-    status_l = build_compact_status("SOXL", is_active_l, budget_l, is_done_l, session_name_ui, now_est, hold_l['qty'], entry_l, entry_time_l, entry_time_s)
-    status_s = build_compact_status("SOXS", is_active_s, budget_s, is_done_s, session_name_ui, now_est, hold_s['qty'], entry_s, entry_time_s, entry_time_l)
+    status_s = build_compact_status("SOXS", is_active_s, budget_s, is_done_s, session_name_ui, now_est, hold_s['qty'], entry_s)
     
     scan_time = now_est.strftime("%m-%d %H:%M:%S")
 
@@ -330,29 +306,21 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
 ▫️ 레버리지 기대 진폭 (x5.0): <code>{lev_expected_amp:.2f}%</code>
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
 📊 <b>현재가 & 5MA(어제 진폭)</b>
-🐂 <b>SOXL</b> <code>${price_l:.2f}</code> | <code>{amp_l:.1f}%({yest_amp_l:.1f}%)</code>
 🐻 <b>SOXS</b> <code>${price_s:.2f}</code> | <code>{amp_s:.1f}%({yest_amp_s:.1f}%)</code>
 {trend_msg}
 
 🌅 <b>프리장</b> (04:00~09:29)
-🐂 <b>SOXL</b> <code>[VWAP] ${sess_l['pre_vwap']:.2f}</code>
-  ⤷ 팩트: <code>${sess_l['pre_l']:.2f}~${sess_l['pre_h']:.2f} ({sess_l['pre_amp']:.1f}%)</code>
-  ⤷ 예상: <code>${pre_exp_l_l:.2f}~${pre_exp_h_l:.2f}</code>
 🐻 <b>SOXS</b> <code>[VWAP] ${sess_s['pre_vwap']:.2f}</code>
   ⤷ 팩트: <code>${sess_s['pre_l']:.2f}~${sess_s['pre_h']:.2f} ({sess_s['pre_amp']:.1f}%)</code>
   ⤷ 예상: <code>${pre_exp_l_s:.2f}~${pre_exp_h_s:.2f}</code>
 ▫️ <b>실시간:</b> <code>{pre_trend_msg}</code>
 
 🔥 <b>정규장</b> (09:30~16:00)
-🐂 <b>SOXL</b> <code>[VWAP] ${sess_l['reg_vwap']:.2f}</code>
-  ⤷ 팩트: <code>${sess_l['reg_l']:.2f}~${sess_l['reg_h']:.2f} ({sess_l['reg_amp']:.1f}%)</code>
-  ⤷ 예상: <code>${reg_exp_l_l:.2f}~${reg_exp_h_l:.2f}</code>
 🐻 <b>SOXS</b> <code>[VWAP] ${sess_s['reg_vwap']:.2f}</code>
   ⤷ 팩트: <code>${sess_s['reg_l']:.2f}~${sess_s['reg_h']:.2f} ({sess_s['reg_amp']:.1f}%)</code>
   ⤷ 예상: <code>${reg_exp_l_s:.2f}~${reg_exp_h_s:.2f}</code>
 ▫️ <b>실시간:</b> <code>{reg_trend_msg}</code>
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
-{status_l}
 {status_s}
 
 ⏱️ 갱신: <code>{scan_time} EST</code>"""
@@ -493,17 +461,15 @@ async def build_sync_board() -> str:
             "profit_krw": profit_krw
         }
 
-    soxl_data = await get_symbol_sync_data("SOXL")
     soxs_data = await get_symbol_sync_data("SOXS")
     
     def format_symbol(d):
         profit_sign = "+" if d['profit_usd'] >= 0 else "-"
-        
         flag_str = "⏳ 대기"
         if d['qty'] > 0:
             flag_str = "🌅 [PRE 진입: +1.0%]"
-
-        emoji = "🐂" if d['symbol'] == "SOXL" else "🐻"
+        emoji = "🐻"
+        
         return (
             f"⚖️ <b>[{d['symbol']}] 암살자(aVWAP) 지시서</b>\n"
             f"💵 총 시드: ${d['budget']:,.0f} | 🎯 {flag_str}\n"
@@ -518,42 +484,27 @@ async def build_sync_board() -> str:
         f"📅 {dst_str} ({now_est.strftime('%H:%M')})\n"
         f"💵 주문가능금액: ${bp:,.2f}\n"
         f"➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
-        f"{format_symbol(soxl_data)}\n\n"
         f"{format_symbol(soxs_data)}\n\n"
         f"▶️ /avwap : 🔫 트레이딩 레이더 관제탑"
     )
     return text
 
 async def build_settlement_board() -> tuple[str, InlineKeyboardMarkup]:
-    state_l = await AssassinLedger.get_state("SOXL")
     state_s = await AssassinLedger.get_state("SOXS")
-    
-    budget_l, is_active_l = state_l[1], state_l[4]
     budget_s, is_active_s = state_s[1], state_s[4]
-
-    state_l_str = "🟢 ON" if is_active_l else "🔴 OFF"
     state_s_str = "🟢 ON" if is_active_s else "🔴 OFF"
 
     text = (
-        "⚙️ <b>[전술 코어 제어반]</b>\n"
+        "⚙️ <b>[전술 코어 제어반 (단독 락온)]</b>\n"
         "➖➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
-        "🐂 <b>SOXL (LONG)</b>\n"
-        f"▫️ <b>상태:</b> <code>{state_l_str}</code>\n"
-        f"▫️ <b>예산:</b> <code>${budget_l:,.2f}</code>\n\n"
-        "🐻 <b>SOXS (SHORT)</b>\n"
+        "🐻 <b>SOXS (SHORT 단독 가동)</b>\n"
         f"▫️ <b>상태:</b> <code>{state_s_str}</code>\n"
         f"▫️ <b>예산:</b> <code>${budget_s:,.2f}</code>"
     )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔴 롱 정지" if is_active_l else "🟢 롱 가동", callback_data="toggle_set_act_SOXL"),
-            InlineKeyboardButton(text="🔴 숏 정지" if is_active_s else "🟢 숏 가동", callback_data="toggle_set_act_SOXS")
-        ],
-        [
-            InlineKeyboardButton(text="💵 롱 시드 설정", callback_data="set_budget_SOXL"),
-            InlineKeyboardButton(text="💵 숏 시드 설정", callback_data="set_budget_SOXS")
-        ],
+        [InlineKeyboardButton(text="🔴 숏(SOXS) 정지" if is_active_s else "🟢 숏(SOXS) 가동", callback_data="toggle_set_act_SOXS")],
+        [InlineKeyboardButton(text="💵 숏(SOXS) 시드 설정", callback_data="set_budget_SOXS")],
         [InlineKeyboardButton(text="🔫 트레이딩 레이더", callback_data="open_avwap")],
         [InlineKeyboardButton(text="🔙 메인 메뉴", callback_data="back_to_main")]
     ])
@@ -718,12 +669,12 @@ async def cmd_reset(message: types.Message, state: FSMContext):
     print(f"💬 [TG 수신] /reset 명령 하달 (User: {user.id})", flush=True)
     await state.clear()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ 동시 초기화 진행", callback_data="execute_dual_reset")],
+        [InlineKeyboardButton(text="✅ 단독(SOXS) 장부 초기화", callback_data="execute_single_reset")],
         [InlineKeyboardButton(text="🔙 취소", callback_data="back_to_main")]
     ])
     text = (
-        "⚠️ <b>[듀얼 장부 동시 초기화]</b>\n\n"
-        "경고: SOXL 및 SOXS의 로컬 장부(평단가, 목표가, 매도/매수 주문 ID, NQ 기록, 세션 락)를 100% 영구 소각하고 0점으로 원자적 초기화를 수행합니다.\n"
+        "⚠️ <b>[SOXS 장부 초기화]</b>\n\n"
+        "경고: SOXS 단독 로컬 장부(평단가, 목표가, 주문 ID, NQ 기록, 세션 락)를 100% 영구 소각하고 0점으로 원자적 초기화를 수행합니다.\n"
         "진행하시겠습니까?"
     )
     try:
@@ -731,22 +682,21 @@ async def cmd_reset(message: types.Message, state: FSMContext):
     except Exception:
         pass
 
-@router.callback_query(F.data == "execute_dual_reset")
-async def process_execute_dual_reset(callback_query: types.CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "execute_single_reset")
+async def process_execute_single_reset(callback_query: types.CallbackQuery, state: FSMContext):
     user = getattr(callback_query, "from_user", None)
     if not user or getattr(user, "id", None) != ADMIN_CHAT_ID:
         return
-    print(f"💬 [TG 콜백 수신] execute_dual_reset (User: {user.id})", flush=True)
+    print(f"💬 [TG 콜백 수신] execute_single_reset (User: {user.id})", flush=True)
     await state.clear()
     try:
-        await AssassinLedger.save_state("SOXL", price=0.0, target_sell_price=0.0, buy_order_id="", sell_order_id="", is_session_done=False, entry_session="", entry_time=0.0, nq_entry_price=0.0, nq_entry_amp=0.0)
         await AssassinLedger.save_state("SOXS", price=0.0, target_sell_price=0.0, buy_order_id="", sell_order_id="", is_session_done=False, entry_session="", entry_time=0.0, nq_entry_price=0.0, nq_entry_amp=0.0)
         
-        await callback_query.answer("✅ 듀얼 장부 영구 소각 완료", show_alert=True)
+        await callback_query.answer("✅ SOXS 장부 영구 소각 완료", show_alert=True)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 메인 메뉴", callback_data="back_to_main")]
         ])
-        await callback_query.message.edit_text("✅ <b>[듀얼 장부 영구 소각 완료]</b>\n▫️ SOXL, SOXS 장부가 0점으로 초기화되었습니다.", reply_markup=keyboard, parse_mode="HTML")
+        await callback_query.message.edit_text("✅ <b>[SOXS 장부 영구 소각 완료]</b>\n▫️ SOXS 숏 전용 장부가 0점으로 초기화되었습니다.", reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         if "message is not modified" not in str(e).lower():
             try:
