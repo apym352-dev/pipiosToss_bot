@@ -3,12 +3,10 @@
 # 목적: SOXS 단일 장부 격리 및 세션별 aVWAP 연산 엔진 (I/O 통제 결속)
 # =====================================================================
 # MODIFIED: 초과 Case 44 - 오버나이트 로직 전면 소각 및 수동 통제 위임
-# MODIFIED: 3단 하향망 로직 전면 소각 (1.0% 고정 락온) 및 관련 플래그 증발
-# MODIFIED: 취약점 1 방어 - NQ=F 매크로 데이터 60초 TTL 인메모리 캐시 중앙 통제소(MacroDataCache) 신설
 # MODIFIED: 취약점 1 완벽 방어 - 통신 실패 및 결측치 발생 시에도 타임스탬프 원자적 갱신으로 60초 TTL 쿨다운 강제 (IP 밴 차단 락온)
 # MODIFIED: 치명적 취약점 방어 - NQ=F 세션 시프트 직후 데이터 프레임 증발 시 발생하는 IndexError 원천 소각 (df.empty 검증망 주입)
 # MODIFIED: NQ=F 1d 자정 롤오버 왜곡 방어 - 45분 갭 필터링 경계값 원자적 하드 락온 (>= 45분)
-# NEW: 초과 Case 67 방어 - NQ=F 진입가(nq_entry_price) 및 진입 진폭(nq_entry_amp) 동적 최대 손실 덤핑을 위한 장부 필드 원자적 증축
+# NEW: 초과 Case 68 방어 - 사용자 선택형 동적 익절률(target_profit_rate) 장부 필드 원자적 증축 (기본값 0.5%)
 
 import os
 import json
@@ -64,18 +62,19 @@ class AssassinLedger:
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"AssassinLedger_{symbol}.json")
 
     @classmethod
-    async def get_state(cls, symbol: str) -> tuple[float, float, str, bool, bool, float, str, str, float, float, float]:
+    async def get_state(cls, symbol: str) -> tuple[float, float, float, str, bool, bool, float, str, str, float, float, float]:
         filepath = cls._get_file_path(symbol)
         async with GlobalThrottle.get_file_lock(filepath):
             def _read():
                 if not os.path.exists(filepath):
-                    return 0.0, 100.0, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0
+                    return 0.0, 100.0, 0.5, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         return (
                             float(data.get("last_buy_price", 0.0)),
                             float(data.get("budget", 100.0)),
+                            float(data.get("target_profit_rate", 0.5)),
                             str(data.get("last_session_id", "")),
                             bool(data.get("is_session_done", False)),
                             bool(data.get("is_active", True)),
@@ -87,7 +86,7 @@ class AssassinLedger:
                             float(data.get("nq_entry_amp", 0.0))
                         )
                 except Exception:
-                    return 0.0, 100.0, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0
+                    return 0.0, 100.0, 0.5, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0
             return await asyncio.to_thread(_read)
 
     @classmethod
@@ -105,7 +104,7 @@ class AssassinLedger:
             return await asyncio.to_thread(_read)
 
     @classmethod
-    async def save_state(cls, symbol: str, price: float = None, budget: float = None, 
+    async def save_state(cls, symbol: str, price: float = None, budget: float = None, target_profit_rate: float = None,
                          last_session_id: str = None, is_session_done: bool = None, 
                          is_active: bool = None, target_sell_price: float = None, 
                          buy_order_id: str = None, sell_order_id: str = None, 
@@ -124,6 +123,7 @@ class AssassinLedger:
                 
                 if price is not None: data["last_buy_price"] = price
                 if budget is not None: data["budget"] = budget
+                if target_profit_rate is not None: data["target_profit_rate"] = target_profit_rate
                 if last_session_id is not None: data["last_session_id"] = last_session_id
                 if is_session_done is not None: data["is_session_done"] = is_session_done
                 if is_active is not None: data["is_active"] = is_active
@@ -135,7 +135,7 @@ class AssassinLedger:
                 if nq_entry_price is not None: data["nq_entry_price"] = nq_entry_price
                 if nq_entry_amp is not None: data["nq_entry_amp"] = nq_entry_amp
                 
-                # 낡은 조건주문 ID 및 세션 모드 데드코드 원자적 파기
+                # 낡은 플래그 데드코드 원자적 파기
                 for obsolete_key in ["pre_first_flag", "force_downgrade", "force_downgrade_0_6", "is_stage_3", "cond_order_id", "session_mode"]:
                     data.pop(obsolete_key, None)
                 
