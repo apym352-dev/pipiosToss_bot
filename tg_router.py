@@ -665,8 +665,8 @@ async def process_toggle_profit_rate(callback_query: types.CallbackQuery, state:
         new_mode = "MANUAL_0.5"
         new_rate = 0.5
     elif profit_mode == "MANUAL_0.5":
-        new_mode = "MANUAL_1.0"
-        new_rate = 1.0
+        new_mode = "MANUAL_1.2"
+        new_rate = 1.2
     else:
         new_mode = "AUTO"
         new_rate = 0.5
