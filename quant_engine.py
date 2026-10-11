@@ -6,7 +6,7 @@
 # MODIFIED: 취약점 1 완벽 방어 - 통신 실패 및 결측치 발생 시에도 타임스탬프 원자적 갱신으로 60초 TTL 쿨다운 강제 (IP 밴 차단 락온)
 # MODIFIED: 치명적 취약점 방어 - NQ=F 세션 시프트 직후 데이터 프레임 증발 시 발생하는 IndexError 원천 소각 (df.empty 검증망 주입)
 # MODIFIED: NQ=F 1d 자정 롤오버 왜곡 방어 - 45분 갭 필터링 경계값 원자적 하드 락온 (>= 45분)
-# NEW: 초과 Case 68 방어 - 사용자 선택형 동적 익절률(target_profit_rate) 장부 필드 원자적 증축 (기본값 0.5%)
+# NEW: 초과 Case 68 방어 - 사용자 선택형 동적 익절 스위칭을 위한 profit_mode 필드 원자적 증축 (기본값 AUTO)
 
 import os
 import json
@@ -62,12 +62,12 @@ class AssassinLedger:
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"AssassinLedger_{symbol}.json")
 
     @classmethod
-    async def get_state(cls, symbol: str) -> tuple[float, float, float, str, bool, bool, float, str, str, float, float, float]:
+    async def get_state(cls, symbol: str) -> tuple[float, float, float, str, bool, bool, float, str, str, float, float, float, str]:
         filepath = cls._get_file_path(symbol)
         async with GlobalThrottle.get_file_lock(filepath):
             def _read():
                 if not os.path.exists(filepath):
-                    return 0.0, 100.0, 0.5, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0
+                    return 0.0, 100.0, 0.5, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0, "AUTO"
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = json.load(f)
@@ -83,10 +83,11 @@ class AssassinLedger:
                             str(data.get("entry_session", "")),
                             float(data.get("entry_time", 0.0)),
                             float(data.get("nq_entry_price", 0.0)),
-                            float(data.get("nq_entry_amp", 0.0))
+                            float(data.get("nq_entry_amp", 0.0)),
+                            str(data.get("profit_mode", "AUTO"))
                         )
                 except Exception:
-                    return 0.0, 100.0, 0.5, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0
+                    return 0.0, 100.0, 0.5, "", False, True, 0.0, "", "", 0.0, 0.0, 0.0, "AUTO"
             return await asyncio.to_thread(_read)
 
     @classmethod
@@ -109,7 +110,8 @@ class AssassinLedger:
                          is_active: bool = None, target_sell_price: float = None, 
                          buy_order_id: str = None, sell_order_id: str = None, 
                          entry_session: str = None, entry_time: float = None,
-                         nq_entry_price: float = None, nq_entry_amp: float = None):
+                         nq_entry_price: float = None, nq_entry_amp: float = None,
+                         profit_mode: str = None):
         filepath = cls._get_file_path(symbol)
         async with GlobalThrottle.get_file_lock(filepath):
             def _write():
@@ -134,6 +136,7 @@ class AssassinLedger:
                 if entry_time is not None: data["entry_time"] = entry_time
                 if nq_entry_price is not None: data["nq_entry_price"] = nq_entry_price
                 if nq_entry_amp is not None: data["nq_entry_amp"] = nq_entry_amp
+                if profit_mode is not None: data["profit_mode"] = profit_mode
                 
                 # 낡은 플래그 데드코드 원자적 파기
                 for obsolete_key in ["pre_first_flag", "force_downgrade", "force_downgrade_0_6", "is_stage_3", "cond_order_id", "session_mode"]:

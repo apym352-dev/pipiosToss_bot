@@ -4,7 +4,7 @@
 # =====================================================================
 # MODIFIED: SOXL UI 및 로직 100% 소각 (SOXS 100% 단일 종목 렌더링)
 # MODIFIED: 04:00~09:29 '절대쉴드(04:01 덫 대기 유지)' 텍스트 렌더링 주입
-# NEW: 초과 Case 68 - 사용자 선택형 익절 목표 동적 토글(0.5% <-> 1.0%) 제어 UI 신설
+# MODIFIED: 초과 Case 68 - 3단 동적 스위칭 (AUTO -> 수동 0.5% -> 수동 1.0%) 제어 UI 및 컷오프 표시망 증축
 
 import os
 import html
@@ -269,23 +269,36 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
     reg_trend_msg = get_realtime_trend_single(sess_s['reg_body'], sess_s['reg_amp'])
 
     state_s = await AssassinLedger.get_state("SOXS")
-    budget_s, target_profit_rate_s, is_done_s, is_active_s, entry_s, entry_time_s = state_s[1], state_s[2], state_s[4], state_s[5], state_s[8], state_s[9]
+    budget_s, target_profit_rate_s, is_done_s, is_active_s, entry_s, entry_time_s, nq_entry_price_s, nq_entry_amp_s, profit_mode_s = state_s[1], state_s[2], state_s[4], state_s[5], state_s[8], state_s[9], state_s[10], state_s[11], state_s[12]
 
-    def build_compact_status(symbol_short, is_active, budget, is_done, current_session, est_time, qty, entry_session, target_profit_rate):
+    def build_compact_status(symbol_short, is_active, budget, is_done, current_session, est_time, qty, entry_session, target_profit_rate, profit_mode, nq_amp_global, nq_entry_amp, avg_price):
         state_flag = "ON" if is_active else "OFF"
         
+        expected_target = target_profit_rate
+        if profit_mode == "AUTO":
+            expected_target = 1.0 if nq_amp_global >= 0.63 else 0.5
+            target_str = f"AUTO 예상 {expected_target}%"
+        else:
+            target_str = f"수동 {target_profit_rate}%"
+
+        sl_str = ""
+        if qty > 0 and nq_entry_amp > 0.0 and avg_price > 0.0:
+            sl_pct = nq_entry_amp * 2.5
+            sl_price = avg_price * (1.0 - sl_pct / 100.0)
+            sl_str = f" | 컷오프 ${sl_price:.2f}(-{sl_pct:.2f}%)"
+
         if not is_active:
             state_text = "대기"
         elif qty > 0:
-            state_text = f"보유(+{target_profit_rate}%)"
+            state_text = f"보유(+{target_profit_rate}%{sl_str})"
         elif is_done:
             state_text = "타격완료"
         else:
             if current_session == "preMarket":
                 if est_time.hour == 4 and est_time.minute == 0:
-                    state_text = "PRE대기 (데이터 수집중)"
+                    state_text = f"PRE대기 ({target_str})"
                 else:
-                    state_text = "절대쉴드(04:01 덫 대기 유지)"
+                    state_text = f"절대쉴드 ({target_str} 덫 대기)"
             elif current_session == "dayMarket":
                 state_text = "시스템대기"
             else:
@@ -294,7 +307,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
         emoji = "🐻"
         return f"{emoji} <b>{symbol_short}</b> <code>[{state_flag}]</code> {state_text} | <code>${budget:.0f}</code>"
 
-    status_s = build_compact_status("SOXS", is_active_s, budget_s, is_done_s, session_name_ui, now_est, hold_s['qty'], entry_s, target_profit_rate_s)
+    status_s = build_compact_status("SOXS", is_active_s, budget_s, is_done_s, session_name_ui, now_est, hold_s.get('qty', 0.0), entry_s, target_profit_rate_s, profit_mode_s, nq_amp, nq_entry_amp_s, hold_s.get('avg_price', 0.0))
     
     scan_time = now_est.strftime("%m-%d %H:%M:%S")
 
@@ -492,8 +505,18 @@ async def build_sync_board() -> str:
 
 async def build_settlement_board() -> tuple[str, InlineKeyboardMarkup]:
     state_s = await AssassinLedger.get_state("SOXS")
-    budget_s, target_profit_rate_s, is_active_s = state_s[1], state_s[2], state_s[5]
+    budget_s, target_profit_rate_s, is_active_s, profit_mode_s = state_s[1], state_s[2], state_s[5], state_s[12]
     state_s_str = "🟢 ON" if is_active_s else "🔴 OFF"
+
+    if profit_mode_s == "AUTO":
+        mode_display = "AUTO"
+        next_mode_btn = "🎯 모드: AUTO ➡️ 수동 0.5%"
+    elif profit_mode_s == "MANUAL_0.5":
+        mode_display = "수동 0.5%"
+        next_mode_btn = "🎯 모드: 수동 0.5% ➡️ 수동 1.0%"
+    else:
+        mode_display = "수동 1.0%"
+        next_mode_btn = "🎯 모드: 수동 1.0% ➡️ AUTO"
 
     text = (
         "⚙️ <b>[전술 코어 제어반 (단독 락온)]</b>\n"
@@ -501,15 +524,13 @@ async def build_settlement_board() -> tuple[str, InlineKeyboardMarkup]:
         "🐻 <b>SOXS (SHORT 단독 가동)</b>\n"
         f"▫️ <b>상태:</b> <code>{state_s_str}</code>\n"
         f"▫️ <b>예산:</b> <code>${budget_s:,.2f}</code>\n"
-        f"▫️ <b>익절:</b> <code>+{target_profit_rate_s}%</code>"
+        f"▫️ <b>익절:</b> <code>{mode_display}</code>"
     )
-
-    next_profit_rate = 1.0 if target_profit_rate_s == 0.5 else 0.5
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔴 숏(SOXS) 정지" if is_active_s else "🟢 숏(SOXS) 가동", callback_data="toggle_set_act_SOXS")],
         [InlineKeyboardButton(text="💵 숏(SOXS) 시드 설정", callback_data="set_budget_SOXS")],
-        [InlineKeyboardButton(text=f"🎯 익절 목표 (현재: {target_profit_rate_s}%) ➡️ {next_profit_rate}%", callback_data="toggle_profit_rate_SOXS")],
+        [InlineKeyboardButton(text=next_mode_btn, callback_data="toggle_profit_rate_SOXS")],
         [InlineKeyboardButton(text="🔫 트레이딩 레이더", callback_data="open_avwap")],
         [InlineKeyboardButton(text="🔙 메인 메뉴", callback_data="back_to_main")]
     ])
@@ -638,13 +659,23 @@ async def process_toggle_profit_rate(callback_query: types.CallbackQuery, state:
     symbol = callback_query.data.split("_")[3].upper()
     print(f"💬 [TG 콜백 수신] toggle_profit_rate_{symbol} (User: {user.id})", flush=True)
     state_data = await AssassinLedger.get_state(symbol)
-    current_rate = state_data[2]
-    new_rate = 1.0 if current_rate == 0.5 else 0.5
-    await AssassinLedger.save_state(symbol, target_profit_rate=new_rate)
+    profit_mode = state_data[12]
+    
+    if profit_mode == "AUTO":
+        new_mode = "MANUAL_0.5"
+        new_rate = 0.5
+    elif profit_mode == "MANUAL_0.5":
+        new_mode = "MANUAL_1.0"
+        new_rate = 1.0
+    else:
+        new_mode = "AUTO"
+        new_rate = 0.5
+        
+    await AssassinLedger.save_state(symbol, target_profit_rate=new_rate, profit_mode=new_mode)
     text, keyboard = await build_settlement_board()
     try:
         await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-        await callback_query.answer(f"✅ 익절 목표가 {new_rate}%로 변경되었습니다.", show_alert=True)
+        await callback_query.answer(f"✅ 익절 모드가 {new_mode}로 변경되었습니다.", show_alert=True)
     except Exception:
         pass
 
