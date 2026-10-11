@@ -722,7 +722,7 @@ async def assassin_loop(client: TossApiClient, bot: Bot, chat_id: int, symbol: s
                                         if target_qty > 0:
                                             applied_target_rate = target_profit_rate
                                             if profit_mode == "AUTO":
-                                                applied_target_rate = 1.0 if nq_amp_global >= 0.63 else 0.5
+                                                applied_target_rate = 1.2 if nq_amp_global >= 0.63 else 0.5
                                                 
                                             idem = idempotency_keys[symbol]["BUY"]
                                             if not idem:
