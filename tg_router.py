@@ -276,7 +276,7 @@ async def build_avwap_radar() -> tuple[str, InlineKeyboardMarkup]:
         
         expected_target = target_profit_rate
         if profit_mode == "AUTO":
-            expected_target = 1.0 if nq_amp_global >= 0.63 else 0.5
+            expected_target = 1.2 if nq_amp_global >= 0.63 else 0.5
             target_str = f"AUTO 예상 {expected_target}%"
         else:
             target_str = f"수동 {target_profit_rate}%"
@@ -515,8 +515,8 @@ async def build_settlement_board() -> tuple[str, InlineKeyboardMarkup]:
         mode_display = "수동 0.5%"
         next_mode_btn = "🎯 모드: 수동 0.5% ➡️ 수동 1.0%"
     else:
-        mode_display = "수동 1.0%"
-        next_mode_btn = "🎯 모드: 수동 1.0% ➡️ AUTO"
+        mode_display = "수동 1.2%"
+        next_mode_btn = "🎯 모드: 수동 1.2% ➡️ AUTO"
 
     text = (
         "⚙️ <b>[전술 코어 제어반 (단독 락온)]</b>\n"
