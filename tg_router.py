@@ -513,7 +513,7 @@ async def build_settlement_board() -> tuple[str, InlineKeyboardMarkup]:
         next_mode_btn = "🎯 모드: AUTO ➡️ 수동 0.5%"
     elif profit_mode_s == "MANUAL_0.5":
         mode_display = "수동 0.5%"
-        next_mode_btn = "🎯 모드: 수동 0.5% ➡️ 수동 1.0%"
+        next_mode_btn = "🎯 모드: 수동 0.5% ➡️ 수동 1.2%"
     else:
         mode_display = "수동 1.2%"
         next_mode_btn = "🎯 모드: 수동 1.2% ➡️ AUTO"
