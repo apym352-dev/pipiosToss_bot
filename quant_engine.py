@@ -244,8 +244,8 @@ class AssassinLedger:
     DEFAULT_TARGET_PROFIT_RATE = 0.64
     # 전술 제어반 선택 허용 목표 익절률 (+0.64% 고승률 회전형 vs +1.00% 고수익 복리형) (Case 68)
     ALLOWED_TARGET_RATES = (0.64, 1.00)
-    ROUND_TRIP_COMM_PCT = 0.14
-    ONE_WAY_COMM_RATE = 0.0007
+    ROUND_TRIP_COMM_PCT = 0.20
+    ONE_WAY_COMM_RATE = 0.0010
     MIN_BUDGET_FLOOR = 10.0
 
     @classmethod
@@ -271,7 +271,7 @@ class AssassinLedger:
             pass
         return 0.64
 
-    # 선택된 목표 익절률에서 왕복 협의 수수료(0.14%)를 공제한 순수익 복리 증액률 반환 (0.64% -> 0.50%, 1.00% -> 0.86%)
+    # 선택된 목표 익절률에서 왕복 협의 수수료(0.20%)를 공제한 순수익 복리 증액률 반환 (0.64% -> 0.50%, 1.00% -> 0.86%)
     @classmethod
     def get_net_compound_rate(cls, target_profit_rate: float) -> float:
         norm_r = cls.normalize_target_rate(target_profit_rate)
