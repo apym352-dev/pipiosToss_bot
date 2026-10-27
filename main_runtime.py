@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 # MODIFIED: main_runtime.py
-인피니트 스노우볼 (Infinite Snowball) v3.0 — 메인 런타임 서포트 브릿지 (메인 코드 2분할 리팩토링 Part 1 / 2 · Step 04 / 04)
+인피니트 스노우볼 (Infinite Snowball) v3.0 — 메인 런타임 서포트 브릿지 (메인 코드 2분할 리팩토링 Part 1 / 2 · Step 03 / 04)
 - 역할:
   1) 적응형 비동기 플러그인 호출기(_call_plugin_adaptive) 및 동적 심볼 리졸버(_resolve_module_attr) (Case 13)
   2) TossApiClient 런타임 메서드 호환성 폴리필 어댑터(_install_toss_api_compatibility_patches · 보조 폴리필 5종 및 close 전수 포함)
   3) 폴더별 3중 원장 인스턴스 팩토리(_instantiate_stratum_ledger · Case 68) 및 주말 휴장 판별(_check_weekend_nyse_closed_dynamic · Case 01, 79)
-  4) 100% 벡터화 1분봉/일봉 지표 및 실시간 틱 Wilder's RSI(14) 합성 폴백(_compute_candle_metrics_dynamic · Case 80)
+  4) 100% 벡터화 1분봉/일봉 지표 및 실시간 틱 Wilder's RSI(14) 무손실 직결(_compute_candle_metrics_dynamic · Case 80 RSI 50.0 고정 버그 영구 소각)
   5) 폴더 위치(base_dir) 전용 텔레그램 토큰·채팅방 ID 자동 탐색기(_discover_telegram_credentials · Case 68)
   6) 내장형 사용자 중심 초슬림 텔레그램 롱폴링/관제탑 브릿지(_AdaptiveTelegramBridge · tg_ui_plugin 단일 렌더러 직결 ·
+     /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행 ·
      전술 제어반 황금시간[07:00~07:50 EST & RSI <= 19.0] 전액매수 모드 선택기[기본값 NONE(OFF) ↔ POCKET_ALLIN ↔ GRID_L1_ALLIN] 완벽 지원 · Case 64, 80)
 - 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온
 """
@@ -27,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -45,7 +46,10 @@ from quant_engine import (
     GOLDEN_ALLIN_MODES,
     summarize_stratum_portfolio,
 )
-from quant_indicators_plugin import refresh_metrics_with_live_tick
+from quant_indicators_plugin import (
+    compute_soxl_quant_metrics_1m,
+    refresh_metrics_with_live_tick,
+)
 from sniper_plugin import mark_reserve_deposit_check_shield
 from tg_ui_plugin import (
     SEED_INPUT_PROMPT_TIMEOUT_SEC,
@@ -391,21 +395,31 @@ async def _invoke_raw_toss_api(
 def _extract_candles_list(
     raw_res: Any,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    # MODIFIED [Case 80]:
+    result.candles 표준 스키마뿐만 아니라 result 직접 리스트, items, data 키 응답을 모두 파싱한다.
+    """
     if isinstance(raw_res, list):
         return [c for c in raw_res if isinstance(c, dict)], None
     if isinstance(raw_res, dict):
-        res_obj = (
-            raw_res.get("result")
-            if isinstance(raw_res.get("result"), dict)
-            else raw_res
-        )
+        res_obj = raw_res.get("result") if "result" in raw_res else raw_res
+        if isinstance(res_obj, list):
+            return [c for c in res_obj if isinstance(c, dict)], None
         if isinstance(res_obj, dict):
-            c_list = res_obj.get("candles")
+            c_list = (
+                res_obj.get("candles")
+                if res_obj.get("candles") is not None
+                else (
+                    res_obj.get("items")
+                    if res_obj.get("items") is not None
+                    else res_obj.get("data")
+                )
+            )
             next_b = res_obj.get("nextBefore")
             if isinstance(c_list, list):
                 return (
                     [c for c in c_list if isinstance(c, dict)],
-                    str(next_b) if next_b else None,
+                    str(next_b).strip() if next_b else None,
                 )
     return [], None
 
@@ -498,32 +512,45 @@ def _install_toss_api_compatibility_patches() -> None:
                         pass
 
             collected: List[Dict[str, Any]] = []
+            seen_ts: Set[str] = set()
             before_cursor: Optional[str] = None
             pages = 2 if req_total > 200 else 1
-            for _ in range(pages):
+            for page_i in range(pages):
                 rem = max(1, min(200, req_total - len(collected)))
                 q_params: Dict[str, Any] = {
                     "symbol": symbol,
                     "interval": "1m",
-                    "count": rem,
+                    "count": (200 if page_i == 0 and req_total >= 100 else rem),
                     "adjusted": "true",
                 }
                 if before_cursor:
                     q_params["before"] = before_cursor
-                raw = await _invoke_raw_toss_api(
-                    self,
-                    method="GET",
-                    path="/api/v1/candles",
-                    params=q_params,
-                    require_account=False,
-                )
-                page_candles, next_b = _extract_candles_list(raw)
+                try:
+                    raw = await _invoke_raw_toss_api(
+                        self,
+                        method="GET",
+                        path="/api/v1/candles",
+                        params=q_params,
+                        require_account=False,
+                    )
+                    page_candles, next_b = _extract_candles_list(raw)
+                except Exception:
+                    break
                 if not page_candles:
                     break
-                collected.extend(page_candles)
-                if not next_b or len(collected) >= req_total:
+                for c in page_candles:
+                    ts_s = str(c.get("timestamp") or "").strip()
+                    if ts_s and ts_s not in seen_ts:
+                        seen_ts.add(ts_s)
+                        collected.append(c)
+                if (
+                    not next_b
+                    or next_b == before_cursor
+                    or len(collected) >= req_total
+                ):
                     break
                 before_cursor = next_b
+            collected.sort(key=lambda x: str(x.get("timestamp") or ""))
             return collected
 
         setattr(TossApiClient, "get_candles_1m", _poly_get_candles_1m)
@@ -804,10 +831,28 @@ def _compute_vectorized_metrics_fallback(
     now_est: datetime,
     candles_1d: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    """
+    # MODIFIED [Case 80]:
+    quant_indicators_plugin.compute_soxl_quant_metrics_1m() 를 최우선 호출하여
+    인메모리 1분봉(_LIVE_1M_BAR_STORE) 병합 및 Wilder's RSI(14) 산출을 수행하고,
+    예외 발생 시에만 ISO8601 + np.diff 기반 자체 벡터화 폴백을 수행한다.
+    """
     dt_now = now_est.astimezone(EST_TZ)
-    today_str = dt_now.strftime("%Y-%m-%d")
     lp = safe_float(live_price, 0.0)
 
+    try:
+        res_primary = compute_soxl_quant_metrics_1m(
+            candles=candles_1m,
+            live_price=lp,
+            now_est=dt_now,
+            daily_candles=candles_1d,
+        )
+        if isinstance(res_primary, dict):
+            return res_primary
+    except Exception:
+        pass
+
+    today_str = dt_now.strftime("%Y-%m-%d")
     out: Dict[str, Any] = {
         "symbol": TARGET_SYMBOL,
         "live_price": round(lp, 4),
@@ -868,8 +913,17 @@ def _compute_vectorized_metrics_fallback(
         if df.empty or "timestamp" not in df.columns:
             return refresh_metrics_with_live_tick(out, lp, now_est=dt_now)
 
-        ts_utc = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        try:
+            ts_utc = pd.to_datetime(
+                df["timestamp"], format="ISO8601", utc=True, errors="coerce"
+            )
+        except Exception:
+            ts_utc = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+
         df = df.loc[ts_utc.notna()].copy()
+        if df.empty:
+            return refresh_metrics_with_live_tick(out, lp, now_est=dt_now)
+
         df["dt_est"] = ts_utc[ts_utc.notna()].dt.tz_convert(EST_TZ)
         df.sort_values("dt_est", ascending=True, inplace=True)
         df.drop_duplicates(subset=["dt_est"], keep="last", inplace=True)
@@ -930,27 +984,38 @@ def _compute_vectorized_metrics_fallback(
         out["cur_bar_high"] = round(float(highs[-1]), 4)
         out["cur_bar_low"] = round(float(lows[-1]), 4)
 
-        # Case 80: Wilder's RSI(14) 및 직전 봉 기저값 산출
+        # Case 80: np.diff 기반 Wilder's RSI(14) 및 직전 봉 기저값 산출
         n_c = len(closes)
-        if n_c >= 3:
-            s_close = pd.Series(closes)
-            delta = s_close.diff()
-            gain = delta.clip(lower=0.0)
-            loss = (-delta).clip(lower=0.0)
-            avg_gain = gain.ewm(
-                alpha=1.0 / 14.0, min_periods=1, adjust=False
-            ).mean()
-            avg_loss = loss.ewm(
-                alpha=1.0 / 14.0, min_periods=1, adjust=False
-            ).mean()
-            last_g = float(avg_gain.iloc[-1])
-            last_l = float(avg_loss.iloc[-1])
+        if n_c >= 2:
+            deltas = np.diff(closes)
+            gains = np.maximum(0.0, deltas)
+            losses = np.maximum(0.0, -deltas)
+            avg_gain = (
+                pd.Series(gains)
+                .ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False)
+                .mean()
+                .to_numpy(dtype=float)
+            )
+            avg_loss = (
+                pd.Series(losses)
+                .ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False)
+                .mean()
+                .to_numpy(dtype=float)
+            )
+            last_g = float(avg_gain[-1])
+            last_l = float(avg_loss[-1])
             out["prev_bar_close"] = round(float(closes[-2]), 4)
-            out["prev_avg_gain"] = round(float(avg_gain.iloc[-2]), 6)
-            out["prev_avg_loss"] = round(float(avg_loss.iloc[-2]), 6)
+            out["prev_avg_gain"] = round(
+                float(avg_gain[-2]) if len(avg_gain) >= 2 else 0.0, 6
+            )
+            out["prev_avg_loss"] = round(
+                float(avg_loss[-2]) if len(avg_loss) >= 2 else 0.0, 6
+            )
             out["rsi_ready"] = bool(n_c >= 14)
-            if last_l <= 1e-12:
-                out["rsi_14"] = 100.0 if last_g > 0.0 else 50.0
+            if last_g <= 1e-12 and last_l <= 1e-12:
+                out["rsi_14"] = 50.0
+            elif last_l <= 1e-12:
+                out["rsi_14"] = 100.0
             else:
                 rs = last_g / last_l
                 out["rsi_14"] = round(100.0 - (100.0 / (1.0 + rs)), 2)
@@ -1008,64 +1073,24 @@ async def _compute_candle_metrics_dynamic(
     now_est: datetime,
     candles_1d: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    excluded = {
-        "evaluate_buy_gate_bucket_status",
-        "is_active_trading_window",
-        "is_active_buy_window",
-        "is_active_sell_window",
-        "is_extended_sell_only_window",
-        "is_golden_allin_time_window",
-        "refresh_metrics_with_live_tick",
-        "is_weekend_nyse_closed",
-        "is_weekend_closed",
-    }
-    fn = _resolve_module_attr(
-        modules=(quant_indicators_plugin, quant_engine),
-        candidate_names=(
-            "compute_soxl_quant_metrics_1m",
-            "compute_quant_metrics_1m",
-            "calculate_soxl_quant_metrics_1m",
-            "compute_candle_metrics_1m",
-            "build_soxl_candle_metrics",
-            "calculate_vwap_metrics_1m",
-        ),
-        predicate=lambda f: (
-            inspect.isfunction(f)
-            and getattr(f, "__module__", "")
-            == quant_indicators_plugin.__name__
-            and f.__name__ not in excluded
-            and not f.__name__.startswith("_")
-        ),
-    )
-    if callable(fn):
-        try:
-            res = await _call_plugin_adaptive(
-                fn,
-                context=context,
-                api=context.api,
-                symbol=TARGET_SYMBOL,
-                candles=candles_1m,
-                candles_1m=candles_1m,
-                minute_candles=candles_1m,
-                daily_candles=candles_1d,
-                candles_1d=candles_1d,
-                day_candles=candles_1d,
-                live_price=live_price,
-                current_price=live_price,
-                price=live_price,
-                now_est=now_est,
-                dt_now=now_est,
+    """
+    # MODIFIED [Case 80 : compute_soxl_quant_metrics_1m 결과 무손실 직결]:
+    quant_indicators_plugin.compute_soxl_quant_metrics_1m() 가 반환한 딕셔너리를
+    조건부 누락 없이 즉시 채택하여 인메모리 1분봉 합성 기저값(prev_bar_close 등)이 100% 유지되도록 보장한다.
+    """
+    try:
+        res_direct = compute_soxl_quant_metrics_1m(
+            candles=candles_1m,
+            live_price=live_price,
+            now_est=now_est,
+            daily_candles=candles_1d,
+        )
+        if isinstance(res_direct, dict):
+            return refresh_metrics_with_live_tick(
+                res_direct, live_price, now_est=now_est
             )
-            if isinstance(res, dict) and (
-                safe_float(res.get("premarket_vwap"), 0.0) > 0.0
-                or safe_float(res.get("regular_vwap"), 0.0) > 0.0
-                or bool(res.get("rsi_ready"))
-            ):
-                return refresh_metrics_with_live_tick(
-                    res, live_price, now_est=now_est
-                )
-        except Exception:
-            pass
+    except Exception as exc:
+        logger.debug("compute_soxl_quant_metrics_1m 직접 호출 폴백: %s", exc)
 
     return _compute_vectorized_metrics_fallback(
         candles_1m=candles_1m,
@@ -1431,6 +1456,11 @@ class _AdaptiveTelegramBridge:
     async def _refresh_live_price_and_metrics(
         self,
     ) -> Tuple[float, Dict[str, Any]]:
+        """
+        # MODIFIED [Case 80 : /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행]:
+        현재가를 최신화한 뒤,もし candle_metrics_cache 에 아직 prev_bar_close 가 세팅되어 있지 않다면
+        그 자리에서 get_candles_1m(total_count=200)을 1회 호출하여 Wilder's RSI(14) 기저값을 생성한다.
+        """
         now_est = datetime.now(EST_TZ)
         live_p = safe_float(
             self.context.latest_prices.get(TARGET_SYMBOL), 0.0
@@ -1447,6 +1477,23 @@ class _AdaptiveTelegramBridge:
             pass
 
         base_met = self.context.candle_metrics_cache.get(TARGET_SYMBOL, {})
+        if (
+            not isinstance(base_met, dict)
+            or safe_float(base_met.get("prev_bar_close"), 0.0) <= 0.0
+        ):
+            try:
+                c_1m = await self.context.api.get_candles_1m(
+                    symbol=TARGET_SYMBOL, total_count=200
+                )
+                if c_1m:
+                    base_met = compute_soxl_quant_metrics_1m(
+                        candles=c_1m,
+                        live_price=live_p,
+                        now_est=now_est,
+                    )
+            except Exception:
+                pass
+
         met = refresh_metrics_with_live_tick(
             base_met, live_p, now_est=now_est
         )

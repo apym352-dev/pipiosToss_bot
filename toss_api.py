@@ -3,12 +3,12 @@
 # MODIFIED: toss_api.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 토스증권 Open API (v1.2.14) 방탄 통신 통제소 &
 SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 및
-황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 03 / 10)
+황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 04)
 - 제1헌법: 모든 파일 I/O 및 네트워크 통신의 asyncio.to_thread 비동기 격리 + GlobalThrottle 중앙 통제
 - 제2헌법: 기동 시 GET /api/v1/accounts 1회 호출로 BROKERAGE accountSeq 메모리 락온 및 X-Tossinvest-Account 자동 주입
 - 제3헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온:
   1) REAL_ALLOWED_SYMBOLS = ("SOXL",) 단일 롱 화이트리스트 물리적 강제 (인버스 숏 SOXS 원천 차단)
-  2) get_holdings_map_with_status, get_candles_1m, get_candles_1d, get_current_prices_batch,
+  2) get_holdings_map_with_status, get_candles_1m, get_candles_1d, get_recent_trades, get_current_prices_batch,
      get_orderbook, get_buying_power_usd, get_sellable_quantity, create_order, modify_order,
      cancel_order, get_order_detail, get_open_orders, get_closed_orders, probe_latest_manual_fill_price,
      get_usd_krw_rate 등 전 메서드 100% 정식 구현!
@@ -38,12 +38,9 @@ SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 
        required_reserve_deposit_usd, last_reserve_check_ts 원장 영속화 및 회계 항등식 확장
   10) 🚨 [Case 78 : 지정가 부분 체결 후 미체결 잔량(l1_target_quota_qty) 보존 및 1.5초 모니터 기반 잔량(TOPUP_1FL) 지정가 60초 대기 완수]
       - l1_target_quota_qty 원장 영속화 및 0주 졸업 / 1층 익절 공석 전환 시 자동 클리어 정규화 탑재
-  11) 🚨 [NEW · Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용현금 100% 전액 추가매수 &
-      독립 골든포켓(golden_pocket) 분리회계 & 전술 제어반(/settlement) 3대 모드 선택기(기본값 "NONE" [OFF]) 탑재]
-      - DEFAULT_GOLDEN_ALLIN_MODE = "NONE" (사용자 선택 기본값 OFF 락온), GOLDEN_ALLIN_MODES = ("NONE", "POCKET_ALLIN", "GRID_L1_ALLIN")
-      - golden_allin_mode, golden_pocket, last_golden_allin_date, pending_sell_pocket_qty,
-        golden_allin_buy_events, daily_golden_allin_buy_events, golden_pocket_sell_cnt, daily_golden_pocket_sell_cnt,
-        golden_realized_net_usd, daily_golden_realized_net_usd 원장 영속화 및 cycle_golden_allin_mode() 탑재
+  11) 🚨 [Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용현금 100% 전액 추가매수 &
+      독립 골든포켓(golden_pocket) 분리회계 & 전술 제어반(/settlement) 3대 모드 선택기(기본값 "NONE" [OFF]) &
+      1분봉 캔들 페이지네이션 방탄화(1페이지 200봉 유실 차단 및 스키마 다변화 대응) 탑재]
 """
 
 from __future__ import annotations
@@ -2036,7 +2033,7 @@ class TossApiClient:
         return {}
 
     # -----------------------------------------------------------------------
-    # [Market Data 그룹] 현재가 · 호가 · 1분봉/일봉 차트 (API.txt v1.2.14)
+    # [Market Data 그룹] 현재가 · 호가 · 최근체결 · 1분봉/일봉 차트 (API.txt v1.2.14)
     # -----------------------------------------------------------------------
     async def get_current_prices_batch(
         self, symbols: Iterable[str] = (TARGET_SYMBOL,)
@@ -2073,6 +2070,33 @@ class TossApiClient:
     async def get_current_price(self, symbol: str = TARGET_SYMBOL) -> float:
         p_map = await self.get_current_prices_batch((symbol,))
         return safe_float(p_map.get(str(symbol).upper().strip()), 0.0)
+
+    async def get_recent_trades(
+        self, symbol: str = TARGET_SYMBOL, count: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        # NEW [API.txt v1.2.14 & Case 80]:
+        GET /api/v1/trades?symbol=SOXL&count=50
+        당일 최근 체결 내역(price, volume, timestamp)을 조회하여 캔들 차트 지연 시 보조 시계열로 활용한다.
+        """
+        q_cnt = max(1, min(50, safe_int(count, 50)))
+        try:
+            res = await self._request(
+                method="GET",
+                path="/api/v1/trades",
+                params={
+                    "symbol": str(symbol or TARGET_SYMBOL).upper().strip(),
+                    "count": q_cnt,
+                },
+                require_account=False,
+                rate_group="MARKET_DATA",
+            )
+            items = res.get("result") if isinstance(res, dict) else []
+            if isinstance(items, list):
+                return [t for t in items if isinstance(t, dict)]
+        except Exception as exc:
+            logger.debug("get_recent_trades 예외(묵음): %s", exc)
+        return []
 
     async def get_orderbook(
         self, symbol: str = TARGET_SYMBOL
@@ -2128,6 +2152,43 @@ class TossApiClient:
                 return min(prices)
         return safe_float(fallback_price, 0.0)
 
+    @staticmethod
+    def _parse_candle_page_result(
+        res: Any,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """
+        # NEW [Case 80 캔들 응답 스키마 다변화 방탄 파서]:
+        API 응답이 {"result": {"candles": [...], "nextBefore": ...}} 표준 형식일 때뿐만 아니라,
+        {"result": [...]} 리스트 직접 반환 또는 {"candles": [...]} / {"items": [...]} / {"data": [...]}
+        구조일 때도 단 1건의 누락 없이 캔들 배열과 nextBefore 커서를 추출한다.
+        """
+        if not isinstance(res, dict):
+            if isinstance(res, list):
+                return [c for c in res if isinstance(c, dict)], None
+            return [], None
+
+        r_obj = res.get("result") if "result" in res else res
+        if isinstance(r_obj, list):
+            return [c for c in r_obj if isinstance(c, dict)], None
+        if isinstance(r_obj, dict):
+            candles = (
+                r_obj.get("candles")
+                if r_obj.get("candles") is not None
+                else (
+                    r_obj.get("items")
+                    if r_obj.get("items") is not None
+                    else r_obj.get("data")
+                )
+            )
+            next_before = r_obj.get("nextBefore")
+            c_list = (
+                [c for c in candles if isinstance(c, dict)]
+                if isinstance(candles, list)
+                else []
+            )
+            return c_list, (str(next_before).strip() if next_before else None)
+        return [], None
+
     async def get_candles(
         self,
         symbol: str = TARGET_SYMBOL,
@@ -2137,36 +2198,63 @@ class TossApiClient:
         adjusted: bool = True,
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """
-        GET /api/v1/candles (interval ∈ {"1m", "1d"}, count ≤ 200)
+        # MODIFIED [Case 80 : GET /api/v1/candles 방탄 폴백 탑재]:
+        1) 요청된 count(최대 200) 및 adjusted 파라미터로 1차 조회한다.
+        2) 만약 브로커 서버가 특정 세션에서 adjusted 또는 count=200 에 대해 에러나 빈 배열을 반환하면
+           즉시 기본 파라미터(count=min(100, q_cnt), adjusted 생략)로 자동 폴백 재시도한다.
         """
+        sym_clean = str(symbol or TARGET_SYMBOL).upper().strip()
+        intv_clean = str(interval or "1m").strip()
         q_cnt = max(1, min(200, safe_int(count, 100)))
         params: Dict[str, Any] = {
-            "symbol": str(symbol or TARGET_SYMBOL).upper().strip(),
-            "interval": str(interval or "1m"),
+            "symbol": sym_clean,
+            "interval": intv_clean,
             "count": q_cnt,
             "adjusted": bool(adjusted),
         }
         if before:
-            params["before"] = str(before)
+            params["before"] = str(before).strip()
 
-        res = await self._request(
-            method="GET",
-            path="/api/v1/candles",
-            params=params,
-            require_account=False,
-            rate_group="MARKET_DATA_CHART",
-        )
-        r_obj = res.get("result") if isinstance(res, dict) else {}
-        if not isinstance(r_obj, dict):
-            return [], None
-        candles = r_obj.get("candles")
-        next_before = r_obj.get("nextBefore")
-        c_list = (
-            [c for c in candles if isinstance(c, dict)]
-            if isinstance(candles, list)
-            else []
-        )
-        return c_list, (str(next_before) if next_before else None)
+        try:
+            res = await self._request(
+                method="GET",
+                path="/api/v1/candles",
+                params=params,
+                require_account=False,
+                rate_group="MARKET_DATA_CHART",
+            )
+            c_list, next_b = self._parse_candle_page_result(res)
+            if c_list:
+                return c_list, next_b
+        except Exception as exc:
+            logger.debug(
+                "get_candles 1차 호출 폴백 전환(%s, %s, before=%s): %s",
+                sym_clean,
+                intv_clean,
+                before,
+                exc,
+            )
+
+        # 폴백 재시도: before 가 없을 때 adjusted 파라미터를 생략하고 표준 기본 count(최대 100)로 재요청
+        if not before:
+            fb_params: Dict[str, Any] = {
+                "symbol": sym_clean,
+                "interval": intv_clean,
+                "count": min(100, q_cnt),
+            }
+            try:
+                res_fb = await self._request(
+                    method="GET",
+                    path="/api/v1/candles",
+                    params=fb_params,
+                    require_account=False,
+                    rate_group="MARKET_DATA_CHART",
+                )
+                return self._parse_candle_page_result(res_fb)
+            except Exception as exc2:
+                logger.debug("get_candles 2차 폴백 예외(묵음): %s", exc2)
+
+        return [], None
 
     async def get_candles_1m(
         self,
@@ -2175,39 +2263,75 @@ class TossApiClient:
         adjusted: bool = True,
     ) -> List[Dict[str, Any]]:
         """
+        # MODIFIED [Case 80 : 1분봉 다중 페이지네이션 페이지별 독립 예외 격리]:
         GET /api/v1/candles (interval="1m") 를 nextBefore 페이지네이션으로 호출하여
         최대 total_count(기본 300)개의 1분봉 리스트를 반환한다.
+        - 1페이지(최신 200봉) 수신 성공 후 2페이지(before 커서) 조회에서 에러가 발생하더라도
+          이미 확보한 1페이지 200봉이 절대 유실되지 않도록 페이지별로 예외를 격리한다!
+        - nextBefore 커서가 직전 커서와 동일할 경우 즉시 루프를 종료하여 무한 루프를 차단한다.
         """
         target_cnt = max(1, min(600, safe_int(total_count, 300)))
         collected: List[Dict[str, Any]] = []
-        seen_ts = set()
+        seen_ts: Set[str] = set()
         before_cursor: Optional[str] = None
         max_pages = max(1, int(math.ceil(target_cnt / 200.0)) + 1)
 
-        try:
-            for _ in range(max_pages):
-                rem = max(1, min(200, target_cnt - len(collected) + 1))
+        for page_idx in range(max_pages):
+            rem = max(1, min(200, target_cnt - len(collected) + 1))
+            try:
                 batch, next_b = await self.get_candles(
                     symbol=symbol,
                     interval="1m",
-                    count=rem,
+                    count=(200 if page_idx == 0 and target_cnt >= 100 else rem),
                     before=before_cursor,
                     adjusted=adjusted,
                 )
-                if not batch:
-                    break
-                for c in batch:
-                    ts_str = str(c.get("timestamp") or "")
-                    if ts_str and ts_str not in seen_ts:
-                        seen_ts.add(ts_str)
-                        collected.append(c)
-                if not next_b or len(collected) >= target_cnt:
-                    break
-                before_cursor = next_b
-        except Exception as exc:
-            logger.debug("get_candles_1m 조회 예외: %s", exc)
+            except Exception as exc:
+                logger.debug(
+                    "get_candles_1m 페이지(%d) 조회 예외(기수집 %d봉 보존): %s",
+                    page_idx,
+                    len(collected),
+                    exc,
+                )
+                break
 
-        collected.sort(key=lambda x: str(x.get("timestamp") or ""))
+            if not batch:
+                break
+
+            added_in_page = 0
+            for c in batch:
+                if not isinstance(c, dict):
+                    continue
+                ts_str = str(
+                    c.get("timestamp")
+                    or c.get("dt")
+                    or c.get("dateTime")
+                    or c.get("time")
+                    or ""
+                ).strip()
+                if ts_str and ts_str not in seen_ts:
+                    seen_ts.add(ts_str)
+                    collected.append(c)
+                    added_in_page += 1
+
+            if (
+                not next_b
+                or next_b == before_cursor
+                or added_in_page == 0
+                or len(collected) >= target_cnt
+            ):
+                break
+            before_cursor = next_b
+
+        collected.sort(
+            key=lambda x: str(
+                x.get("timestamp")
+                or x.get("dt")
+                or x.get("dateTime")
+                or x.get("time")
+                or ""
+            )
+        )
         if len(collected) > target_cnt:
             collected = collected[-target_cnt:]
         return collected

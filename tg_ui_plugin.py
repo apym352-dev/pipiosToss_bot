@@ -3,7 +3,7 @@
 # MODIFIED: tg_ui_plugin.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
-텔레그램 관제탑 사용자 중심 초슬림 UI 렌더러 및 명령어·콜백 비동기 컨트롤러 코어 모듈 (Step 09 / 10)
+텔레그램 관제탑 사용자 중심 초슬림 UI 렌더러 및 명령어·콜백 비동기 컨트롤러 코어 모듈 (Step 04 / 04)
 - 제1헌법: 모든 텔레그램 HTTP API 호출을 asyncio.to_thread 로 비동기 격리 및 타임아웃 적용
 - 제4헌법: 모든 논리 시계열은 미국 동부 시간(EST/EDT) 100% 락온
 - Case 11 & Case 62:
@@ -23,6 +23,7 @@
      설정된 기준 시드머니(예: $10,000 또는 $19,000)의 8% 정량 투입으로 복귀시키는 `/reset_profit` 전용 기능으로 대체!
 - Case 70, Case 73, Case 74, Case 76, Case 77, Case 78, Case 79 & Case 80:
   1) 매수 직후 최초 60.0초 타임쉴드 유지 & 보유 중 60초 블라인드 대기 락 전면 해제 -> `/avwap` 레이더 상단 `⚡1.5s 실시간타점` 및 실시간 `RSI(14)` 표출
+     (/avwap 호출 시 1분봉 기저값 미확보 상태면 즉시 온디맨드 1분봉 프리워밍 수행으로 RSI 50.0 박제 현상 원천 차단!)
   2) 0주 상태 / 상단 2층 ~ 7층 보유 중 1층 공석 / 활성 1층 보유 중 3대 매수 모니터 상태 및
      황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(+1.50% 익절) 상태 실시간 분리 표출
   3) 💉 [Case 77] 30% 자투리 승격 방지 가드(GUARD30) · 시드고갈 입금 대기 배너 · 예비시드 탄창 현황 표출 및 `/sync` 실행 시 입금 확인 즉시 깨우기 직결!
@@ -61,6 +62,7 @@ from quant_engine import (
     summarize_stratum_portfolio,
 )
 from quant_indicators_plugin import (
+    compute_soxl_quant_metrics_1m,
     evaluate_buy_gate_bucket_status,
     get_market_session_label,
     is_active_buy_window,
@@ -1057,6 +1059,11 @@ class TelegramCommandController:
     async def _refresh_live_price_and_metrics(
         self,
     ) -> Tuple[float, Dict[str, Any]]:
+        """
+        # MODIFIED [Case 80 : /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행]:
+        현재가를 최신화한 뒤, candle_metrics_cache 에 아직 prev_bar_close 가 세팅되어 있지 않다면
+        그 자리에서 get_candles_1m(total_count=200)을 1회 호출하여 Wilder's RSI(14) 기저값을 생성한다.
+        """
         now_est = datetime.now(EST_TZ)
         live_p = safe_float(
             self.context.latest_prices.get(TARGET_SYMBOL), 0.0
@@ -1073,6 +1080,23 @@ class TelegramCommandController:
             pass
 
         base_met = self.context.candle_metrics_cache.get(TARGET_SYMBOL, {})
+        if (
+            not isinstance(base_met, dict)
+            or safe_float(base_met.get("prev_bar_close"), 0.0) <= 0.0
+        ):
+            try:
+                c_1m = await self.context.api.get_candles_1m(
+                    symbol=TARGET_SYMBOL, total_count=200
+                )
+                if c_1m:
+                    base_met = compute_soxl_quant_metrics_1m(
+                        candles=c_1m,
+                        live_price=live_p,
+                        now_est=now_est,
+                    )
+            except Exception:
+                pass
+
         met = refresh_metrics_with_live_tick(
             base_met, live_p, now_est=now_est
         )
@@ -1338,7 +1362,7 @@ class TelegramCommandController:
             chat_id=chat_id,
             text=(
                 "⏳ <b>[시스템 업데이트 개시]</b>\n"
-                "🔸 GitHub 최신 코드 동기화 및 9대 코어 모듈 프리플라이트 검증 중..."
+                "🔸 GitHub 최신 코드 동기화 및 10대 코어 모듈 프리플라이트 검증 중..."
             ),
         )
         upd_res = await execute_git_pull_and_preflight(self.context.base_dir)
@@ -1355,11 +1379,11 @@ class TelegramCommandController:
             msg = (
                 " · ".join(str_parts)
                 if str_parts
-                else "✅ 9대 코어 모듈 검증 통과 · 원장 100% 보존"
+                else "✅ 10대 코어 모듈 검증 통과 · 원장 100% 보존"
             )
         else:
             ok = bool(upd_res)
-            msg = "✅ 9대 코어 모듈 검증 통과 · 원장 100% 보존"
+            msg = "✅ 10대 코어 모듈 검증 통과 · 원장 100% 보존"
 
         await self._ack_telegram_offset(self._last_update_id)
 
