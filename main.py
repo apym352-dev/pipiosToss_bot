@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 # MODIFIED: main.py
-인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 04:07 ~ 16:00 EST 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
-메인 오케스트레이터 · TossApiClient 폴리필(close 포함) · 내장형 사용자 중심 초슬림 텔레그램 롱폴링/관제탑 컨트롤러 통합 코어 모듈 (Step 05 / 05)
-- 최종 확정 진화 챔피언 (💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 / 🔥 03_7G_PURE_10_01 진화형 · Case 70 ~ Case 78) 100% 결속:
+인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
+익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
+메인 오케스트레이터 · TossApiClient 폴리필(close 포함) · 내장형 사용자 중심 초슬림 텔레그램 롱폴링/관제탑 컨트롤러 통합 코어 모듈 (Step 06 / 06)
+- 최종 확정 진화 챔피언 (💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 / 🔥 03_7G_PURE_10_01 진화형 · Case 70 ~ Case 79) 100% 결속:
   1) 8%(12.5분할) 황금비율 정액 기반 정량제 & 온디맨드 예비시드 수혈금(injected_reserve_usd)을 제외한 순수 코어 총자산(core_equity) 기반 정량 산출 &
      min(1회분 예산 상한 주수, 기준가 고정 정량) 이중 캡핑(Case 67, Case 77) & 자투리 절약금(부분 체결 시 비례 정산 Case 78) · 세후 실현수익금 실시간 시드 풀 복리 산입 (COMP_08PCT 고정)
-  2) 0주 상태 60초 타임쉴드 확인 후 실시간 현재가 조회 및 현재가 지정가(LIMIT) 실물 1층(REENTRY_1FL) 산입
-  2-B) 🎯 [NEW · Case 78] 활성 1층 지정가 부분 체결(buckets[0].qty < l1_target_quota_qty) 시 매수 후 60.0초 타임쉴드 경과 시점부터
+  2) 04:07 ~ 16:00 EST 매수 시간창(is_active_buy_window) 내 0주 상태 60초 타임쉴드 확인 후 실시간 현재가 조회 및 현재가 지정가(LIMIT) 실물 1층(REENTRY_1FL) 산입
+  2-B) 🎯 [Case 78] 활성 1층 지정가 부분 체결(buckets[0].qty < l1_target_quota_qty) 시 04:07 ~ 16:00 EST 구간에서 매수 후 60.0초 타임쉴드 경과 시점부터
        매 1.5초 실시간 모니터에서 현재가 <= 1층 단가(buckets[0].book_price) 재도래 시 미체결 잔량(TOPUP_1FL) 지정가 60초 재대기 및 기존 1층 무승격 원자적 합산!
-  3) 상단 2층 ~ 7층(GRID_L2 ~ GRID_L7) 보유 중 1층 공석 시 10분 게이트를 기다리지 않고 매 60.0초(1분) 타임쉴드 주기마다
+  3) 상단 2층 ~ 7층(GRID_L2 ~ GRID_L7) 보유 중 1층 공석 시 04:07 ~ 16:00 EST 구간에서 10분 게이트를 기다리지 않고 매 60.0초(1분) 타임쉴드 주기마다
      실시간 현재가를 조회하되 현재가 <= 2층 단가(buckets[0].book_price) 상한 가드(HOLD_PREVENT_INVERSION · Case 73) 하에서
      눌림목(-1.00%) OR 상승돌파(+1.00%) 하이브리드 독립 실물 1층(REENTRY_1FL) 재장전 (상단 지층 비병합 · Case 67 이중 캡핑!)
   4) 활성 1층 보유 중 정적 기억 사이클 최저 매수가(cycle_min_buy_price) 기본 잠금 기반 10분 고정 4단 와이드 활주로 시드보호 매수 게이트
@@ -18,15 +19,16 @@
       현재가 지정가 추매 및 2~6층 개별 승격 · 8회차 이상 최상단 6층+7층을 통합 7층 본대[GRID_L7]로 가중평균 합병 · Case 72, Case 76)
   5) 💉 [Case 77 : 05_RESV_6P_GUARD30] 30% 자투리 1주 승격 방지 가드(GUARD30) · 시드고갈 시 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent) ·
      토스 실계좌 여유자금(1회분 이상) 입금 자동 감지 기반 최대 +6회분 온디맨드 예비시드 자동 수혈 및 0주 졸업 시 원금 자동 상환!
-  6) ⚡ [Case 65, Case 70, Case 71 & Case 72] 매수 직후 최초 60.0초 타임쉴드 유지 & 이후 보유 중 매 1.5초 실시간 3중 다중 익절 스나이퍼 매도 모니터
-     (매수 후 60.0초 경과 시점부터 60초 블라인드 대기 락 없이 매 1.5초 루프마다 현재가를 상시 대조하여 ① 1층 +1.50% 이상 개별 익절 /
-      ② 2~6층 개별 및 통합 7층 +1.00% 이상 개별 익절 / ③ 2~7층 통합 이동평균 단가 대비 +1.00% 이상 일괄 졸업을 동시 판정해 도래 즉시 현재가 지정가 매도!)
-  7) 🚨 [Case 66 미결 매수 선행 정산] 04:07 ~ 16:00 EST 루프 진입 시 reconcile 호출 전에 sync_pending_buy_order_plugin(Step 3-0)을
-     최우선 실행하여, 거래소 즉시 체결 시에도 텔레그램 체결 알림 · 자투리 절약금 누적 · 60초 타임쉴드 각인이 100% 실행되도록 보장!
-  8) 📡 [Case 11, Case 15, Case 16, Case 62, Case 64, Case 74, Case 76, Case 77 & Case 78 문단 하단 2중 중복 인라인 메뉴 전면 제거 · /reset 차단 및 /reset_profit 전용 대체 ·
+  6) ⚡ [Case 65, Case 70, Case 71, Case 72 & Case 79] 매수 직후 최초 60.0초 타임쉴드 유지 & 이후 보유 중 프리마켓·정규장·애프터마켓(16:00 ~ 19:59 EST)·데이마켓(20:00 ~ 03:59 EST)
+     24시간 전 세션(is_active_sell_window)에서 매 1.5초 실시간 3중 다중 익절 스나이퍼 매도 모니터 가동!
+     (오버나이트 중에도 ① 1층 +1.50% 이상 개별 익절 / ② 2~6층 개별 및 통합 7층 +1.00% 이상 개별 익절 /
+      ③ 2~7층 통합 이동평균 단가 대비 +1.00% 이상 일괄 졸업 도래 즉시 현재가 지정가 매도 발주 · 데이마켓 시세 미제공 및 종목 거래 제한 시 알림 폭탄 100% 묵음!)
+  7) 🚨 [Case 66 미결 매수/매도 선행 정산] 루프 진입 시 reconcile 호출 전에 sync_pending_buy_order_plugin / sync_pending_sell_order_plugin 을
+     최우선 실행하여, 거래소 즉시 체결 시에도 텔레그램 체결 알림 · 자투리 절약금/실현익 누적 · 60초 타임쉴드 각인이 100% 실행되도록 보장!
+  8) 📡 [Case 11, Case 15, Case 16, Case 62, Case 64, Case 74, Case 76, Case 77, Case 78 & Case 79 문단 하단 2중 중복 인라인 메뉴 전면 제거 · /reset 차단 및 /reset_profit 전용 대체 ·
      04:00 EST 및 17:00 EST 당일 시드보호 패스·스텝업 해금·예비수혈 카운터 0회 리셋(단 1회 입금 알림 래치 보존) 보장]
-  9) 🚨 [Case 68, Case 69, Case 71 ~ Case 78 폴더 위치(base_dir) 기반 멀티 봇 자동 식별 격리 & 3중 원장 금고 & 순수 원가 100% 보존]
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 78 전수 락온
+  9) 🚨 [Case 68, Case 69, Case 71 ~ Case 79 폴더 위치(base_dir) 기반 멀티 봇 자동 식별 격리 & 3중 원장 금고 & 순수 원가 100% 보존]
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 79 전수 락온
 """
 
 from __future__ import annotations
@@ -77,7 +79,11 @@ from quant_engine import (
 )
 from quant_indicators_plugin import (
     evaluate_buy_gate_bucket_status,
+    get_market_session_label,
+    is_active_buy_window,
+    is_active_sell_window,
     is_active_trading_window,
+    is_extended_sell_only_window,
     refresh_metrics_with_live_tick,
 )
 from sniper_exit_plugin import (
@@ -905,6 +911,10 @@ def _instantiate_stratum_ledger(
 
 
 def _check_weekend_nyse_closed_dynamic(now_est: datetime) -> bool:
+    """
+    # MODIFIED [Case 01 & Case 79]:
+    금요일 애프터마켓(16:00 ~ 19:59 EST) 익절 매도 개방을 위해 금요일 휴장 진입 시각을 20:00 EST 로 동기화한다.
+    """
     fn = _resolve_module_attr(
         modules=(quant_indicators_plugin, toss_api),
         candidate_names=(
@@ -922,7 +932,7 @@ def _check_weekend_nyse_closed_dynamic(now_est: datetime) -> bool:
     dt = now_est.astimezone(EST_TZ)
     wd = dt.weekday()
     hm = dt.hour * 100 + dt.minute
-    if wd == 4 and hm >= 1700:
+    if wd == 4 and hm >= 2000:
         return True
     if wd == 5:
         return True
@@ -1118,6 +1128,9 @@ async def _compute_candle_metrics_dynamic(
     excluded = {
         "evaluate_buy_gate_bucket_status",
         "is_active_trading_window",
+        "is_active_buy_window",
+        "is_active_sell_window",
+        "is_extended_sell_only_window",
         "refresh_metrics_with_live_tick",
         "is_weekend_nyse_closed",
         "is_weekend_closed",
@@ -1394,16 +1407,23 @@ def _format_case67_quota_badge(summary: Dict[str, Any]) -> str:
 
 
 def _format_multi_grid_stratum_lines(
-    summary: Dict[str, Any], live_price: float
+    summary: Dict[str, Any],
+    live_price: float,
+    is_ext_sell_only: bool = False,
 ) -> List[str]:
     """
-    [Case 71, Case 72, Case 73 & Case 78]:
+    # MODIFIED [Case 71, Case 72, Case 73, Case 78 & Case 79]:
     1층(활성 공격수 · 부분체결 시 미체결 잔량 및 1.5s 감시 표시 / 또는 60초 주기 공석 감시 & 2층 단가 상한) 및
     상단 2층 ~ 6층 개별 완충층 · 통합 7층 본대와 2~7층 통합 이동평균 목표가를 모바일 화면에 최적화된 형태로 전수 렌더링한다.
+    - 애프터마켓/데이마켓(is_ext_sell_only == True)에서는 매수는 잠겨 있고 익절 매도만 1.5s 실시간 감시 중임을 표시한다.
     """
     held_sh = safe_int(summary.get("held_shares"), 0)
     buckets = summary.get("buckets", [])
     if held_sh <= 0 or not buckets:
+        if is_ext_sell_only:
+            return [
+                "⚪ <b>[보유 지층 없음 · 0주]</b> 🔒장외 매수잠금 · 04:07 EST 프리장 개시 후 첫 1층(REENTRY_1FL) 진입 대기"
+            ]
         return [
             "⚪ <b>[보유 지층 없음 · 0주]</b> 60초 타임쉴드 확인 후 현재가 지정가 1층(REENTRY_1FL) 즉시 산입 대기"
         ]
@@ -1417,13 +1437,18 @@ def _format_multi_grid_stratum_lines(
         l1_t = safe_float(summary.get("l1_target_price"), 0.0)
         l1_g = safe_float(summary.get("l1_gain_pct"), 0.0)
         g1_sign = "+" if l1_g >= 0.0 else ""
-        # NEW [Case 78]: 1층 부분 체결 미체결 잔량(l1_rem_quota_qty > 0) 존재 시 목표 정량 및 1.5s 잔량 감시 표출
+        # [Case 78]: 1층 부분 체결 미체결 잔량(l1_rem_quota_qty > 0) 존재 시 목표 정량 및 1.5s 잔량 감시 표출
         l1_rem_q = safe_int(summary.get("l1_rem_quota_qty"), 0)
         l1_target_q = safe_int(summary.get("l1_target_quota_qty"), b1.qty)
         if l1_rem_q > 0 and l1_target_q > b1.qty:
+            topup_mode_str = (
+                "04:07 EST 잔량대기"
+                if is_ext_sell_only
+                else f"${b1.book_price:.2f} 이하 1.5s감시"
+            )
             l1_qty_label = (
                 f"공격수 {b1.qty}주/목표{l1_target_q}주 · "
-                f"🎯잔량 {l1_rem_q}주(${b1.book_price:.2f} 이하 1.5s감시)"
+                f"🎯잔량 {l1_rem_q}주({topup_mode_str})"
             )
         else:
             l1_qty_label = f"공격수 {b1.qty}주"
@@ -1439,9 +1464,14 @@ def _format_multi_grid_stratum_lines(
             safe_float(summary.get("min_indiv_upper_price"), 0.0),
         )
         cap_note = f" · 2층상한 ${l2_cap:.2f} 이하" if l2_cap > 0.0 else ""
-        lines.append(
-            f"⚡ <b>[1층: 공석 · 60초(1분) 주기 눌림(-1.0%)/돌파(+1.0%) 감시{cap_note}]</b>"
-        )
+        if is_ext_sell_only:
+            lines.append(
+                f"⚡ <b>[1층: 공석 · 🔒장외 매수잠금(04:07 EST 이후 재장전{cap_note})]</b>"
+            )
+        else:
+            lines.append(
+                f"⚡ <b>[1층: 공석 · 60초(1분) 주기 눌림(-1.0%)/돌파(+1.0%) 감시{cap_note}]</b>"
+            )
         upper_buckets = buckets[:]
 
     if upper_buckets:
@@ -1549,7 +1579,7 @@ class _AdaptiveTelegramBridge:
     """
     외부 tg_ui_plugin 의 폴링 루프 구조에 구애받지 않고
     자체 내장 getUpdates 롱폴링 + /start, /avwap, /sync, /settlement, /reset_profit, /update +
-    인라인 버튼 콜백 + 시드 숫자 입력을 100% 직접 수행하는 완결형 텔레그램 컨트롤러 (Case 62 ~ 78).
+    인라인 버튼 콜백 + 시드 숫자 입력을 100% 직접 수행하는 완결형 텔레그램 컨트롤러 (Case 62 ~ 79).
     """
 
     def __init__(self, context: Any) -> None:
@@ -1804,17 +1834,19 @@ class _AdaptiveTelegramBridge:
         self, st: Dict[str, Any], now_est: datetime
     ) -> str:
         """
-        # /reset 을 메뉴에서 완전 삭제하고 그 자리에 /reset_profit 만 배치
+        # MODIFIED [Case 02 & Case 79]:
+        - /reset 을 메뉴에서 완전 삭제하고 그 자리에 /reset_profit 만 배치
+        - 애프터마켓(16:00 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST) 익절 매도 확장(매수 잠금) 스케줄 명시
         """
         dst_str = _get_dst_badge(now_est)
         lines = [
             f"🐂 <b>[ 스나이퍼 ({_escape_html(dst_str)}) ]</b>",
             "──────────────",
             "🔹 04:00 ~ 04:06: 🌅 휩소 안정화",
-            "🔹 04:07 ~ 09:29: 🔫 프리장 ",
-            "🔹 09:30 ~ 16:00: 🔥 정규장 ",
-            "🔹 16:00 ~ 16:59: 🌙 일일 결산",
-            "🔹 17:00 ~ 03:59: 🧹 일일 GC · 장외 대기",
+            "🔹 04:07 ~ 09:29: 🔫 프리장 (매수·익절)",
+            "🔹 09:30 ~ 16:00: 🔥 정규장 (매수·익절)",
+            "🔹 16:00 ~ 19:59: 🌇 애프터장 (익절감시·매수잠금)",
+            "🔹 20:00 ~ 03:59: 🌃 데이장 (익절감시·매수잠금)",
             "──────────────",
             "📡 /avwap : 실시간 스나이퍼 레이더",
             "📜 /sync : 지층 지시서",
@@ -1835,19 +1867,21 @@ class _AdaptiveTelegramBridge:
         now_est: datetime,
     ) -> str:
         """
-        # MODIFIED [Case 65, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77 & Case 78]:
+        # MODIFIED [Case 65, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77, Case 78 & Case 79]:
         📡 /avwap 사용자 중심 초슬림 레이더 메시지 생성:
         - 상단 배지를 ⚡1.5s 실시간타점 (미체결 체결 감시 중일 때는 ⚡0.4s 체결감시)으로 표출한다.
+        - 애프터마켓/데이마켓(is_ext_sell_only == True)에서는 상단에 `🌇/🌃 장외 ⚡1.5s 익절감시 가동 중 (🔒매수잠금)` 배너를 표출한다.
         - 매수 직후 최초 60.0초 타임쉴드(in_b) 가동 중일 때만 잔여 초를 표출하고,
           경과 후에는 보유 중 불필요한 60초 매도 대기 문구 없이 상시 1.5초 실시간 익절 감시 상태를 표출한다.
         - 🎯 [Case 78]: 1층이 부분 체결되어 미체결 잔량(l1_rem_quota_qty > 0)이 대기 중일 때는
           매수 후 60초 타임쉴드 해제 즉시 `🎯 [1층 미체결 잔량 K주(목표 M주) ⚡1.5초 감시 중]` 배너를 표출한다.
-        - 시드고갈 입금 대기(waiting_reserve_deposit == True) 중일 때는 권장 입금액 및 잔여 예비한도 배너를 표출한다.
-        - 하단 관제 지표에 🛡️시드보호 패스(30%자투리차단 횟수), 🔥13회차+·🔓스텝업해금,
-          💉예비시드 탄창(사용 M/6회분 · 수혈잔액), 💰자투리절약·세후실현익, 💵가용현금·총자산(순자산)을 직관적으로 표출한다.
         """
+        dt_now = now_est.astimezone(EST_TZ)
+        hm_now = dt_now.hour * 100 + dt_now.minute
+        is_ext_sell_only = is_extended_sell_only_window(hm_now, now_est=dt_now)
+
         met = refresh_metrics_with_live_tick(
-            metrics, live_price, now_est=now_est
+            metrics, live_price, now_est=dt_now
         )
         lp = safe_float(
             live_price,
@@ -1861,7 +1895,11 @@ class _AdaptiveTelegramBridge:
         fast_badge = (
             "⚡0.4s 체결감시"
             if getattr(self.context, "fast_shield_mode", False)
-            else "⚡1.5s 실시간타점"
+            else (
+                "🌃장외 ⚡1.5s 익절감시"
+                if is_ext_sell_only
+                else "⚡1.5s 실시간타점"
+            )
         )
 
         held_sh = safe_int(summary.get("held_shares"), 0)
@@ -1873,7 +1911,7 @@ class _AdaptiveTelegramBridge:
         buckets_list = summary.get("buckets", [])
         l1_book_p = buckets_list[0].book_price if buckets_list else lp
 
-        # 🛡️ Case 65, Case 70, Case 73, Case 77 & Case 78: 매수 직후 60초 / 1층 공석 60초 / 매도 후 60초 / 입금 대기 60초 / 1층 잔량 감시 확인
+        # 🛡️ Case 65, Case 70, Case 73, Case 77, Case 78 & Case 79: 매수 직후 60초 / 1층 공석 60초 / 매도 후 60초 / 입금 대기 60초 / 장외 익절 상태 확인
         in_b, rem_b = is_within_post_buy_time_shield(
             self.context, st, TARGET_SYMBOL
         )
@@ -1919,6 +1957,12 @@ class _AdaptiveTelegramBridge:
                 f"🚨 <b>[💉 시드고갈 입금 대기 중 · 60초 자동감시{wait_s_note}]</b> "
                 f"권장입금 <b>${req_dep_usd:,.2f}</b> (잔여한도 {avail_res_cnt}/{max_res_cnt}회분 · 1회알림 발송완료)"
             )
+        elif is_ext_sell_only:
+            sess_lbl = get_market_session_label(dt_now)
+            shield_line = (
+                f"🌃 <b>[{_escape_html(sess_lbl)}]</b> "
+                "보유 지층 목표가 도달 시 지정가 즉시 익절 · 신규/추가 매수는 04:07 EST 까지 잠금"
+            )
         elif is_l2_only and in_re:
             shield_line = (
                 f"🛡️ <b>[60초 1층 공석 재장전 타임쉴드 가동 중]</b> 잔여 <b>{rem_re:.1f}초</b> 후 "
@@ -1935,10 +1979,12 @@ class _AdaptiveTelegramBridge:
                 f"<b>${l1_book_p:.2f}</b> 이하 재도래 즉시 잔량 60초 지정가 발주"
             )
 
-        stratum_lines = _format_multi_grid_stratum_lines(summary, lp)
+        stratum_lines = _format_multi_grid_stratum_lines(
+            summary, lp, is_ext_sell_only=is_ext_sell_only
+        )
 
         _, _, _, gate_info = evaluate_buy_gate_bucket_status(
-            now_est=now_est,
+            now_est=dt_now,
             buy_interval_min=LOCKED_BUY_INTERVAL_MIN,
             last_evaluated_bucket_id=safe_int(
                 st.get("last_evaluated_buy_bucket_id"), -1
@@ -1952,18 +1998,19 @@ class _AdaptiveTelegramBridge:
         chg_anchor = safe_float(summary.get("chg_from_buy_anchor_pct"), 0.0)
         c_sign = "+" if chg_anchor >= 0.0 else ""
 
-        # [🎯 4 분기 1 & Case 65, Case 73, Case 76, Case 77, Case 78]: 0주 상태 / 1층 공석 / 활성 1층 보유 3대 매수 모니터 상태 분리 표출
+        # [🎯 4 분기 1 & Case 65, Case 73, Case 76, Case 77, Case 78, Case 79]: 0주 상태 / 1층 공석 / 활성 1층 보유 3대 매수 모니터 상태 분리 표출
         if held_sh <= 0:
-            z_wait_label = (
-                f"60초 타임쉴드 잔여 {rem_s:.1f}초"
-                if in_s
-                else "04:07~16:00 EST 실시간 진입 대기"
-            )
+            if is_ext_sell_only:
+                z_wait_label = "🔒장외 매수잠금 · 04:07 EST 해제"
+            elif in_s:
+                z_wait_label = f"60초 타임쉴드 잔여 {rem_s:.1f}초"
+            else:
+                z_wait_label = "04:07~16:00 EST 실시간 진입 대기"
             gate_header_line = (
                 f"🛡️ <b>[0주 첫 1층 진입 모니터 · 60초 타임쉴드]</b> ({z_wait_label})"
             )
             gate_cond_line = (
-                f"▫️ 직전기준 ${ref_anchor:.2f} · 60초 타임쉴드 해제 즉시 실시간 현재가(<b>${lp:.2f}</b>) 지정가 첫 1층(REENTRY_1FL) 산입"
+                f"▫️ 직전기준 ${ref_anchor:.2f} · 04:07~16:00 EST 구간 내 실시간 현재가(<b>${lp:.2f}</b>) 지정가 첫 1층(REENTRY_1FL) 산입"
             )
         elif is_l2_only:
             pull_p = safe_float(summary.get("reentry_pullback_price"), 0.0)
@@ -1973,11 +2020,12 @@ class _AdaptiveTelegramBridge:
                 summary.get("l2_ceiling_price"),
                 safe_float(summary.get("min_indiv_upper_price"), 0.0),
             )
-            re_wait_label = (
-                f"60초 주기 · 잔여 {rem_re:.1f}초"
-                if in_re
-                else "60초 주기 실시간 감시"
-            )
+            if is_ext_sell_only:
+                re_wait_label = "🔒장외 매수잠금 · 04:07 EST 재개"
+            elif in_re:
+                re_wait_label = f"60초 주기 · 잔여 {rem_re:.1f}초"
+            else:
+                re_wait_label = "60초 주기 실시간 감시"
             gate_header_line = (
                 f"🛡️ <b>[60초 주기 1층 공석 재장전 모니터 · 2층 역전차단]</b> ({re_wait_label})"
             )
@@ -2059,7 +2107,7 @@ class _AdaptiveTelegramBridge:
                 res_status_line,
                 f"💰 자투리절약 누적: +${saved_u:,.2f} · 세후실현익: {n_sign}${abs(cum_net):,.2f}",
                 f"💵 가용현금: <b>${free_cash:,.2f}</b> · 총자산: <b>${mark_eq:,.2f}</b> ({m_sign}{mark_roi:.2f}%)",
-                f"🕒 갱신: {now_est.strftime('%m-%d %H:%M:%S EST')}",
+                f"🕒 갱신: {dt_now.strftime('%m-%d %H:%M:%S EST')}",
             ]
         )
         return "\n".join(lines)
@@ -2882,6 +2930,20 @@ class SniperAppContext:
         message: str,
         cooldown_sec: float = 1800.0,
     ) -> None:
+        # Case 79: 데이마켓/애프터마켓 시세 결측이나 거래 제한 관련 사유는 절대 알림을 보내지 않고 100% 묵음 처리
+        r_lower = str(reason_key or "").lower()
+        if any(
+            k in r_lower
+            for k in (
+                "daymarket",
+                "extended",
+                "restrict",
+                "no_price",
+                "no_live_price",
+                "hours_closed",
+            )
+        ):
+            return
         key = f"{symbol}:{reason_key}"
         now_m = time.monotonic()
         last_m = self._strike_hold_alert_ts.get(key, 0.0)
@@ -2898,6 +2960,11 @@ class SniperAppContext:
 # [핵심 3] 백그라운드 태스크 1 : 1분봉 시계열 및 10분 게이트 지표 레이더 (candle_radar_loop)
 # ---------------------------------------------------------------------------
 async def candle_radar_loop(context: SniperAppContext) -> None:
+    """
+    # MODIFIED [Case 79]:
+    데이마켓/애프터마켓에서 브로커가 캔들 데이터를 제공하지 않거나 일시 오류가 발생하더라도
+    경고 로그나 알림 스팸 없이 조용히 디버그 로깅으로 묵음 처리한다.
+    """
     while not context.shutdown_event.is_set():
         now_est = datetime.now(EST_TZ)
         hm = now_est.hour * 100 + now_est.minute
@@ -2941,7 +3008,7 @@ async def candle_radar_loop(context: SniperAppContext) -> None:
         except asyncio.CancelledError:
             break
         except Exception as exc:
-            logger.warning("SOXL 캔들 레이더 루프 예외: %s", exc)
+            logger.debug("SOXL 캔들 레이더 루프 폴백(묵음): %s", exc)
 
         try:
             await asyncio.wait_for(
@@ -2952,7 +3019,7 @@ async def candle_radar_loop(context: SniperAppContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 4] 백그라운드 태스크 2 : 04:07 ~ 16:00 EST 메인 지층 스나이퍼 루프 (main_sniper_loop)
+# [핵심 4] 백그라운드 태스크 2 : 매수(04:07 ~ 16:00 EST) & 익절 매도(24시간 전 세션) 메인 지층 스나이퍼 루프 (main_sniper_loop)
 # ---------------------------------------------------------------------------
 def _evaluate_fast_shield_mode(
     context: SniperAppContext,
@@ -2960,13 +3027,13 @@ def _evaluate_fast_shield_mode(
     live_p: float,
 ) -> bool:
     """
-    🚨 Case 70 :
+    # MODIFIED [Case 70 & Case 79]:
     - 평시 보유 중 매도 모니터 및 1층 미체결 잔량(TOPUP_1FL) 모니터는 매 1.5초(NORMAL_LOOP_INTERVAL_SEC)마다 실시간 타점 감시를 수행한다.
-    - 0.4초 고속 루프(FAST_SHIELD_LOOP_INTERVAL_SEC)는 미체결 주문(buy_order_id / sell_order_id) 체결 확인 시점 및
-      10분 매수 게이트 정각 오픈 경계에서 작동한다.
+    - 0.4초 고속 루프(FAST_SHIELD_LOOP_INTERVAL_SEC)는 프리·정규·애프터·데이마켓 전 구간(is_active_sell_window)에서
+      미체결 주문(buy_order_id / sell_order_id) 체결 확인 시점 및 04:07 ~ 16:00 EST 의 10분 매수 게이트 정각 오픈 경계에서 작동한다.
     """
     hm = now_est.hour * 100 + now_est.minute
-    if not is_active_trading_window(hm):
+    if not is_active_sell_window(hm, now_est=now_est):
         return False
 
     st = context.ledger.get_state(TARGET_SYMBOL)
@@ -2978,21 +3045,29 @@ def _evaluate_fast_shield_mode(
     ).strip():
         return True
 
-    is_gate_open, _, _, b_info = evaluate_buy_gate_bucket_status(
-        now_est=now_est,
-        buy_interval_min=LOCKED_BUY_INTERVAL_MIN,
-        last_evaluated_bucket_id=safe_int(
-            st.get("last_evaluated_buy_bucket_id"), -1
-        ),
-        last_evaluated_date=str(st.get("last_evaluated_date") or ""),
-    )
-    if is_gate_open and bool(b_info.get("is_exact_boundary_min")):
-        return True
+    if is_active_buy_window(hm, now_est=now_est):
+        is_gate_open, _, _, b_info = evaluate_buy_gate_bucket_status(
+            now_est=now_est,
+            buy_interval_min=LOCKED_BUY_INTERVAL_MIN,
+            last_evaluated_bucket_id=safe_int(
+                st.get("last_evaluated_buy_bucket_id"), -1
+            ),
+            last_evaluated_date=str(st.get("last_evaluated_date") or ""),
+        )
+        if is_gate_open and bool(b_info.get("is_exact_boundary_min")):
+            return True
 
     return False
 
 
 async def main_sniper_loop(context: SniperAppContext) -> None:
+    """
+    # MODIFIED [Case 66, Case 70 ~ Case 79]:
+    - 04:00 ~ 04:06 EST : 프리장 개장 초기 호가 안정화 및 직전 데이마켓 미결 주문 선행 정산 후 잔류 미체결 취소
+    - 04:07 ~ 16:00 EST : 프리장 + 정규장 (매수 게이트 + ⚡1.5초 실시간 익절 매도 모니터 동시 가동)
+    - 16:00 ~ 19:59 EST : 애프터마켓 (16:00 일일 결산 보고 단 1회 실행 직후 루프 중단 없이 ⚡1.5초 실시간 익절 매도 모니터 연속 가동 · 매수 잠금)
+    - 20:00 ~ 03:59 EST : 데이마켓 (⚡1.5초 실시간 익절 매도 모니터 상시 가동 · 매수 잠금 · 브로커 시세 미제공/거래 제한 시 100% 묵음 대기)
+    """
     while not context.shutdown_event.is_set():
         now_est = datetime.now(EST_TZ)
         hm = now_est.hour * 100 + now_est.minute
@@ -3008,10 +3083,15 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                     pass
                 continue
 
+            is_ext_sell_only = is_extended_sell_only_window(
+                hm, now_est=now_est
+            )
+
             price_map = await context.api.get_current_prices_batch(
                 (TARGET_SYMBOL,)
             )
-            live_p = safe_float(price_map.get(TARGET_SYMBOL), 0.0)
+            fresh_tick_p = safe_float(price_map.get(TARGET_SYMBOL), 0.0)
+            live_p = fresh_tick_p
             if live_p > 0.0:
                 context.latest_prices[TARGET_SYMBOL] = live_p
 
@@ -3021,7 +3101,10 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
             context.holdings_fetch_ok = fetch_ok
             if fetch_ok and isinstance(holdings_map, dict):
                 context.latest_holdings = holdings_map
-                if live_p <= 0.0:
+                # Case 79: 프리장/정규장에서만 holdings.last_price 폴백을 허용하고,
+                # 데이마켓/애프터마켓(is_ext_sell_only)에서 시세 API 가 0.0 을 반환한 날에는
+                # 정적 종가(last_price)로 매도 모니터가 오발주하지 않도록 fresh_tick_p 만 신뢰한다.
+                if live_p <= 0.0 and not is_ext_sell_only:
                     live_p = safe_float(
                         holdings_map.get(TARGET_SYMBOL, {}).get("last_price"),
                         0.0,
@@ -3045,6 +3128,12 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                 )
 
             prices = dict(context.latest_prices)
+            # Case 79: 애프터/데이마켓에서는 실제로 방금 조회된 실시간 시세(fresh_tick_p)만 매도 모니터에 전달!
+            prices_for_sell = (
+                {TARGET_SYMBOL: fresh_tick_p}
+                if is_ext_sell_only
+                else prices
+            )
             holdings = dict(context.latest_holdings)
 
             if 400 <= hm <= 406:
@@ -3075,8 +3164,25 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                         last_reserve_check_ts=0.0,
                     )
 
-            elif is_active_trading_window(hm):
-                # 🚨 3-0) [Case 66 핵심 방어 : 미결 매수 주문 최우선 선행 정산]
+            elif is_active_sell_window(hm, now_est=now_est):
+                # 🌙 [Step 3-A · Case 79] 16:00 ~ 16:59 EST 정규장 마감 진입 시 일일 결산 보고를 단 1회 실행하되,
+                # 루프를 건너뛰지 않고 즉시 아래 애프터마켓 실시간 익절 매도 감시로 직결!
+                if 1600 <= hm <= 1659:
+                    st_chk = context.ledger.get_state(TARGET_SYMBOL)
+                    today_close_str = now_est.strftime("%Y-%m-%d")
+                    if (
+                        str(st_chk.get("last_closing_report_date") or "")
+                        != today_close_str
+                    ):
+                        await _call_plugin_adaptive(
+                            execute_1600_daily_closing_settlement_plugin,
+                            context=context,
+                            holdings=holdings,
+                            prices=prices,
+                            now_est=now_est,
+                        )
+
+                # 🚨 [Step 3-0 · Case 66] 미결 매수/매도 주문 최우선 선행 정산
                 st_pre = context.ledger.get_state(TARGET_SYMBOL)
                 if str(st_pre.get("buy_order_id") or "").strip():
                     await _call_plugin_adaptive(
@@ -3086,8 +3192,16 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                         prices=prices,
                         now_est=now_est,
                     )
+                if str(st_pre.get("sell_order_id") or "").strip():
+                    await _call_plugin_adaptive(
+                        sync_pending_sell_order_plugin,
+                        context=context,
+                        holdings=holdings,
+                        prices=prices,
+                        now_est=now_est,
+                    )
 
-                # 3-1) 로컬 7층 그리드 원장 ↔ 토스 실보유 잔고 무결성 화해 (Case 66/68/69/71/72/76/77/78 가드 내장)
+                # [Step 3-1] 로컬 7층 그리드 원장 ↔ 토스 실보유 잔고 무결성 화해 (24시간 전 세션 작동)
                 await _call_plugin_adaptive(
                     reconcile_stratum_with_broker_holdings_plugin,
                     context=context,
@@ -3096,12 +3210,12 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                     now_est=now_est,
                 )
 
-                # 3-2) 매수 후 최초 60초 타임쉴드 & 이후 보유 중 매 1.5초 실시간 3중 다중 익절 스나이퍼 매도 모니터 (Case 44, 65, 69, 70, 71, 72, 77, 78)
+                # ⚡ [Step 3-2 · Case 70, 71, 72, 79] 프리·정규·애프터·데이마켓 24시간 전 세션 매 1.5초 실시간 3중 다중 익절 매도 모니터
                 sell_res = await _call_plugin_adaptive(
                     execute_1m_sniper_sell_and_reanchor_plugin,
                     context=context,
                     holdings=holdings,
-                    prices=prices,
+                    prices=prices_for_sell,
                     now_est=now_est,
                 )
                 did_sell = bool(
@@ -3109,8 +3223,8 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                     and sell_res.get("did_sell_or_ratchet")
                 )
 
-                # 🚨 Case 44 & Case 78: 동일 틱에서 매도가 발생(또는 진행 중)한 경우 추가 매수를 즉시 스킵하여 자전거래 차단!
-                if not did_sell:
+                # 🔵 [Step 3-3 · Case 44, 78, 79] 매수 게이트/모니터는 오직 04:07 ~ 16:00 EST (is_active_buy_window) 구간에서만 가동!
+                if not did_sell and is_active_buy_window(hm, now_est=now_est):
                     await _call_plugin_adaptive(
                         execute_seed_protected_buy_gate_plugin,
                         context=context,
@@ -3118,15 +3232,6 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                         prices=prices,
                         now_est=now_est,
                     )
-
-            elif 1600 <= hm <= 1659:
-                await _call_plugin_adaptive(
-                    execute_1600_daily_closing_settlement_plugin,
-                    context=context,
-                    holdings=holdings,
-                    prices=prices,
-                    now_est=now_est,
-                )
 
             else:
                 st_idle = context.ledger.get_state(TARGET_SYMBOL)
@@ -3175,7 +3280,7 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 5] 백그라운드 태스크 3 : 17:00 EST 일일 GC · 날짜별 금고 백업 및 롤오버 루프 (Case 74, Case 76, Case 77)
+# [핵심 5] 백그라운드 태스크 3 : 17:00 EST 일일 GC · 날짜별 금고 백업 및 롤오버 루프 (Case 74, Case 76, Case 77, Case 79)
 # ---------------------------------------------------------------------------
 async def daily_gc_and_rollover_loop(context: SniperAppContext) -> None:
     last_gc_date = ""
@@ -3196,8 +3301,8 @@ async def daily_gc_and_rollover_loop(context: SniperAppContext) -> None:
                 await execute_daily_1700_gc_and_backup_plugin(
                     context=context, now_est=now_est
                 )
-                # 🚨 Case 74, Case 76 & Case 77: 17:00 EST 일일 마감 롤오버 시 일일 카운터는 0회로 리셋하되
-                # 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent)는 절대 리셋하지 않고 보존!
+                # 🚨 Case 74, Case 76, Case 77 & Case 79: 17:00 EST 일일 마감 롤오버 시 일일 매수/패스 카운터는 0회로 리셋하되
+                # 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent) 및 애프터장 미결 매도 주문은 보존!
                 await context.ledger.update_state(
                     TARGET_SYMBOL,
                     daily_seed_protect_pass_cnt=0,
@@ -3280,7 +3385,7 @@ async def async_main() -> None:
 
     run_quant_engine_tdd()
     logger.info(
-        "✅ [QuantEngine TDD 사전 무결성 검증 통과] 챔피언 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 (1~6층 개별 + 통합 7층 본대 · 30%% 자투리 가드 & +6회분 자동 수혈/상환 · Case 78 TOPUP_1FL 잔량 합산 Case 59~78) 검증 완료"
+        "✅ [QuantEngine TDD 사전 무결성 검증 통과] 챔피언 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 (1~6층 개별 + 통합 7층 본대 · 30%% 자투리 가드 & +6회분 자동 수혈/상환 · Case 78 TOPUP_1FL 잔량 합산 · Case 79 애프터/데이장 익절 확장 & 묵음 방어 Case 59~79) 검증 완료"
     )
 
     context = SniperAppContext(base_dir=base_dir)
@@ -3392,7 +3497,7 @@ async def async_main() -> None:
     ]
 
     logger.info(
-        "🚀 [SOXL 7층 골디락스 멀티그리드 스나이퍼 가동 완료 · 폴더=%s] 04:07 ~ 16:00 EST · 챔피언 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 30%% 자투리 가드 & 단 1회 입금알림 & +6회분 자동 수혈/0주 자동 상환 & Case 78 1층 잔량(TOPUP_1FL) 1.5s 모니터 완수(Case 65~78)",
+        "🚀 [SOXL 7층 골디락스 멀티그리드 스나이퍼 가동 완료 · 폴더=%s] 매수 04:07~16:00 EST & 익절 매도 24시간(프리·정규·애프터·데이장) 전 구간 확장 · 데이장 시세미제공/거래제한 100%% 묵음 방어(Case 65~79)",
         context.folder_slug,
     )
 

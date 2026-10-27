@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 # MODIFIED: quant_indicators_plugin.py
-인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(SOXL) 04:07 ~ 16:00 EST 오버나이트 지층관리 스나이퍼
-시계열 100% 벡터화 지표 엔진 및 10분 고정 매수 게이트 버킷 산출 코어 모듈 (Step 01 / 04)
-- 제4헌법 & Case 01: 모든 시계열 및 세션 경계 연산은 미국 동부 시간(EST_TZ = ZoneInfo('America/New_York')) 단일 소스 락온
+인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(SOXL) 매수 04:07 ~ 16:00 EST 제한 &
+익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 지층관리 스나이퍼
+시계열 100% 벡터화 지표 엔진 및 10분 고정 매수 게이트 버킷 산출 코어 모듈 (Step 02 / 06)
+- 제4헌법 & Case 01 & Case 79:
+  1) 모든 시계열 및 세션 경계 연산은 미국 동부 시간(EST_TZ = ZoneInfo('America/New_York')) 단일 소스 락온
+  2) 매수 허용 시간창(is_active_buy_window : 평일 04:07 ~ 16:00 EST)과
+     익절 매도 허용 시간창(is_active_sell_window : 04:00 ~ 04:06 EST 오프닝 안정화 및 주말 휴장 외
+     프리마켓 · 정규장 · 애프터마켓[16:00 ~ 19:59 EST] · 데이마켓[20:00 ~ 03:59 EST] 전 구간) 엄격 분리!
+  3) 금요일 애프터마켓(16:00 ~ 19:59 EST) 익절 매도를 허용하기 위해 주말 휴장 구간을
+     금요일 20:00 EST ~ 일요일 17:59 EST 로 제어 (일요일 18:00 EST 이후 월요일 데이마켓 정상 개방)
 - Case 36 & Case 64: 04:07 ~ 16:00 EST 구간 10분 고정 매수 게이트(LOCKED_BUY_INTERVAL_MIN = 10) 버킷 산출 및
   동일 버킷 내 중복 평가 원천 차단(evaluate_buy_gate_bucket_status)
-- MODIFIED: 최상위 상수(GATE_START_MIN_OF_DAY) 및 RSI 시리즈(s_close) 홀수 공백 들여쓰기 오타 원천 제거
 - 벡터화 강제: Pandas DataFrame / NumPy 배열 연산 시 for 루프를 100% 배제하고 벡터화 수식으로만
   프리장(04:00 ~ 09:29 EST) / 정규장(09:30 ~ 16:00 EST) 누적 VWAP, 고/저가 진폭, 5일 이동평균(5MA) 진폭 기반
   예상 변동 밴드, 실시간 하이킨 아시(Heikin-Ashi) 양/음봉 배지 및 Wilder's RSI(14)를 고속 산출한다.
@@ -32,34 +38,28 @@ from toss_api import (
 
 logger = logging.getLogger("toss_sniper.quant_indicators_plugin")
 
-# MODIFIED: 04:07 EST 기준 분(minute of day = 4 * 60 + 7 = 247) 및 16:00 EST 마감 분(16 * 60 = 960) 0칸 표준 정렬
+# 04:07 EST 기준 분(minute of day = 4 * 60 + 7 = 247) 및 16:00 EST 마감 분(16 * 60 = 960) 0칸 표준 정렬
 GATE_START_MIN_OF_DAY: int = 4 * 60 + 7   # 247 (04:07 EST)
 GATE_END_MIN_OF_DAY: int = 16 * 60        # 960 (16:00 EST)
 REGULAR_START_MIN_OF_DAY: int = 9 * 60 + 30  # 570 (09:30 EST)
 
 
 # ---------------------------------------------------------------------------
-# [핵심 1] 운용 시간대(04:07 ~ 16:00 EST) 및 주말 휴장 판별기 (Case 01)
+# [핵심 1] 매수 시간창(04:07 ~ 16:00 EST) vs 익절 매도 시간창(24시간 전 세션) 및 주말 휴장 판별기 (Case 01 & Case 79)
 # ---------------------------------------------------------------------------
-def is_active_trading_window(hm: int) -> bool:
-    """
-    🎯 2 & Case 01:
-    프리장 개시(04:07 EST)부터 정규장 마감(16:00 EST)까지가 스나이퍼 액티브 운용 구간이다.
-    """
-    hm_int = safe_int(hm, 0)
-    return 407 <= hm_int <= 1600
-
-
 def is_weekend_nyse_closed(now_est: Optional[datetime] = None) -> bool:
     """
-    🚨 Case 01:
-    미국 동부 시간(EST/EDT) 기준 금요일 17:00 EST ~ 일요일 17:59 EST 구간을 주말 휴장으로 판정한다.
+    # MODIFIED [Case 01 & Case 79]:
+    미국 동부 시간(EST/EDT) 기준 주말 휴장 판정:
+    - 금요일 애프터마켓(16:00 ~ 19:59 EST) 익절 매도 주문을 허용하기 위해 금요일(wd == 4)은 20:00 EST 부터 휴장으로 판정한다.
+    - 토요일(wd == 5) 전 구간 및 일요일(wd == 6) 17:59 EST 까지를 주말 휴장으로 판정하며,
+      일요일 18:00 EST 이후(한국 시간 월요일 오전 데이마켓)는 익절 매도 감시를 위해 정상 개장(False)으로 판정한다.
     """
     dt = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     wd = dt.weekday()  # 월=0, 화=1, ..., 금=4, 토=5, 일=6
     hm = dt.hour * 100 + dt.minute
 
-    if wd == 4 and hm >= 1700:
+    if wd == 4 and hm >= 2000:
         return True
     if wd == 5:
         return True
@@ -68,9 +68,70 @@ def is_weekend_nyse_closed(now_est: Optional[datetime] = None) -> bool:
     return False
 
 
+def is_active_buy_window(
+    hm: int, now_est: Optional[datetime] = None
+) -> bool:
+    """
+    # NEW [🎯 2 & Case 01, Case 79 : 매수 전용 시간창 (평일 04:07 ~ 16:00 EST 엄격 제한)]:
+    - 모든 매수(0주 첫 진입 REENTRY_1FL · 1층 미체결 잔량 TOPUP_1FL · 1층 공석 60초 주기 재장전 · 10분 와이드/스텝업 추매 DIP_1FL)는
+      오직 평일(월~금) 프리장 개시(04:07 EST)부터 정규장 마감(16:00 EST)까지만 허용한다.
+    - 애프터마켓(16:01 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST, 일요일 저녁 포함)에서는 매수를 100% 차단(False)한다.
+    """
+    if now_est is not None:
+        dt = now_est.astimezone(EST_TZ)
+        if is_weekend_nyse_closed(dt) or dt.weekday() >= 5:
+            return False
+    hm_int = safe_int(hm, 0)
+    return 407 <= hm_int <= 1600
+
+
+def is_active_trading_window(
+    hm: int, now_est: Optional[datetime] = None
+) -> bool:
+    """
+    하위 호환 심볼 유지: 기존 매수 게이트 및 10분 버킷 산출기에서 호출하는 함수로
+    is_active_buy_window(04:07 ~ 16:00 EST)와 동일하게 작동한다.
+    """
+    return is_active_buy_window(hm, now_est=now_est)
+
+
+def is_active_sell_window(
+    hm: int, now_est: Optional[datetime] = None
+) -> bool:
+    """
+    # NEW [🎯 2 & Case 79 : 익절 매도 전용 확장 시간창 (프리마켓 + 정규장 + 애프터마켓 + 데이마켓 전 구간 개방)]:
+    - 오버나이트를 하면서도 목표 익절가(1층 +1.50% / 2~7층 개별 및 이동평균 +1.00%)에 도달하면
+      애프터마켓(16:00 ~ 19:59 EST)과 데이마켓(20:00 ~ 03:59 EST)에서도 즉시 지정가 익절 매도가 나가도록 개방한다.
+    - 오직 04:00 ~ 04:06 EST 프리장 오프닝 안정화 구간(7분)과 주말 휴장(금 20:00 ~ 일 17:59 EST)에만 매도 모니터를 멈춘다.
+    """
+    if now_est is not None:
+        dt = now_est.astimezone(EST_TZ)
+        if is_weekend_nyse_closed(dt):
+            return False
+    hm_int = safe_int(hm, 0)
+    if 400 <= hm_int <= 406:
+        return False
+    return True
+
+
+def is_extended_sell_only_window(
+    hm: int, now_est: Optional[datetime] = None
+) -> bool:
+    """
+    # NEW [Case 79 : 장외 익절 매도 전용 구간(애프터마켓 · 데이마켓) 여부 판별기]:
+    현재 시각이 익절 매도는 열려 있으나(is_active_sell_window == True)
+    신규/추가 매수는 잠겨 있는(is_active_buy_window == False) 애프터마켓 또는 데이마켓 구간인지 판별한다.
+    """
+    return bool(
+        is_active_sell_window(hm, now_est=now_est)
+        and not is_active_buy_window(hm, now_est=now_est)
+    )
+
+
 def get_market_session_label(now_est: Optional[datetime] = None) -> str:
     """
-    현재 EST 시각에 따른 세션 상태 라벨을 반환한다.
+    # MODIFIED [Case 79]:
+    현재 EST 시각에 따른 세션 상태 라벨(애프터장 · 데이장 익절감시 및 매수잠금 상태 명시)을 반환한다.
     """
     dt = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     if is_weekend_nyse_closed(dt):
@@ -78,17 +139,17 @@ def get_market_session_label(now_est: Optional[datetime] = None) -> str:
     hm = dt.hour * 100 + dt.minute
     if 400 <= hm <= 406:
         return "🌅 프리장 오프닝 안정화(04:00~04:06)"
-    if 407 <= hm <= 929:
+    if 407 <= hm <= 929 and dt.weekday() < 5:
         return "🔫 프리장 스나이퍼 가동(04:07~09:29)"
-    if 930 <= hm <= 1600:
+    if 930 <= hm <= 1600 and dt.weekday() < 5:
         return "🔥 정규장 스나이퍼 가동(09:30~16:00)"
-    if 1601 <= hm <= 1659:
-        return "🌙 정규장 마감 결산/오버나이트(16:00~16:59)"
-    return "💤 장외 대기(오버나이트 보존)"
+    if 1601 <= hm <= 1959 and dt.weekday() < 5:
+        return "🌇 애프터장 익절감시(16:00~19:59·매수잠금)"
+    return "🌃 데이장 익절감시(20:00~03:59·매수잠금)"
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 산출기 (Case 01, 36, 64)
+# [핵심 2] 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 산출기 (Case 01, 36, 64, 79)
 # ---------------------------------------------------------------------------
 def evaluate_buy_gate_bucket_status(
     now_est: Optional[datetime] = None,
@@ -97,9 +158,11 @@ def evaluate_buy_gate_bucket_status(
     last_evaluated_date: str = "",
 ) -> Tuple[bool, int, str, Dict[str, Any]]:
     """
-    🚨 Case 01, Case 36 & Case 64:
+    🚨 Case 01, Case 36, Case 64 & Case 79:
     04:07 EST 기점 10분 고정 매수 게이트(04:07, 04:17, 04:27, ..., 15:57 및 16:00 마감봉)의
     현재 버킷 ID(cur_bucket_id)와 게이트 오픈 여부(is_gate_open), 차기 검문 시각(next_gate_hm_str)을 산출한다.
+    - 애프터마켓(16:01 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST)에서는 is_active_buy_window == False 이므로
+      언제나 is_gate_open = False 를 반환하여 장외 매수를 100% 원천 차단한다.
     - 동일 거래일(today_str) 내 동일 버킷(cur_bucket_id <= last_evaluated_bucket_id)에서는
       is_gate_open = False 를 반환하여 중복 매수를 100% 원천 차단한다.
     """
@@ -110,17 +173,18 @@ def evaluate_buy_gate_bucket_status(
 
     interval = LOCKED_BUY_INTERVAL_MIN  # 10분 하드 고정 (Case 64)
 
-    if not is_active_trading_window(hm) or is_weekend_nyse_closed(dt):
+    if not is_active_buy_window(hm, now_est=dt) or is_weekend_nyse_closed(dt):
         return (
             False,
             -1,
             today_str,
             {
                 "is_active_window": False,
+                "is_sell_window_open": is_active_sell_window(hm, now_est=dt),
                 "mins_from_0407": -1,
                 "bucket_10m": -1,
                 "is_exact_boundary_min": False,
-                "next_gate_hm_str": "04:07 EST",
+                "next_gate_hm_str": "04:07 EST (매수잠금·익절감시)",
                 "session_label": get_market_session_label(dt),
             },
         )
@@ -153,6 +217,7 @@ def evaluate_buy_gate_bucket_status(
 
     info: Dict[str, Any] = {
         "is_active_window": True,
+        "is_sell_window_open": True,
         "mins_from_0407": mins_from_0407,
         "bucket_10m": cur_bucket_id,
         "is_exact_boundary_min": is_exact_boundary,
@@ -262,7 +327,7 @@ def _compute_vectorized_heikin_ashi_and_rsi(
     prev_ha_close = float(ha_close_arr[-2]) if n >= 2 else cur_ha_close
     is_bull = bool(cur_ha_close >= cur_ha_open)
 
-    # MODIFIED: Wilder's RSI(14) 벡터화 연산 (8칸 표준 들여쓰기 고정)
+    # Wilder's RSI(14) 벡터화 연산 (8칸 표준 들여쓰기 고정)
     rsi_val = 50.0
     if n >= 3:
         s_close = pd.Series(closes)
@@ -354,13 +419,14 @@ def compute_soxl_quant_metrics_1m(
     daily_candles: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    🎯 2 & Case 01, 15:
+    🎯 2 & Case 01, 15, 79:
     토스 Open API 1분봉(candles) 및 일봉(daily_candles)을 입력받아:
     1) 당일 프리장(04:00 ~ 09:29 EST) VWAP · 고/저가 진폭 · 예상 변동 밴드
     2) 당일 정규장(09:30 ~ 16:00 EST) VWAP · 고/저가 진폭 · 예상 변동 밴드
     3) 최근 5영업일 평균 진폭(5MA) 및 실시간 하이킨 아시 추세 배지(🕯️HA양봉 / 🌑HA음봉)
     4) 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 정보
     를 100% 벡터화 연산으로 산출하여 반환한다.
+    (Case 79: 데이마켓/애프터마켓에서 브로커가 시세·캔들을 제공하지 않는 경우에도 경고 로그나 알림 없이 조용히 묵음 반환)
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     _, cur_bucket_id, today_str, gate_info = evaluate_buy_gate_bucket_status(
@@ -523,7 +589,8 @@ def compute_soxl_quant_metrics_1m(
         )
         return refresh_metrics_with_live_tick(out, lp, now_est=dt_now)
     except Exception as exc:
-        logger.warning("compute_soxl_quant_metrics_1m 연산 예외: %s", exc)
+        # Case 79: 데이마켓 등 장외 시간대 캔들 결측 시에도 소음 없이 조용히 디버그 로깅
+        logger.debug("compute_soxl_quant_metrics_1m 연산 폴백(묵음): %s", exc)
         return default_out
 
 

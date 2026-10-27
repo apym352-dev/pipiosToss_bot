@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
 """
 # MODIFIED: sniper_exit_plugin.py
-순수 롱(SOXL) 전용 '04:07 ~ 16:00 EST 매수 체결 후 최초 60초 강제 타임쉴드(POST_BUY_TO_SELL_SHIELD_SEC = 60.0) &
-매수 후 60초 경과 시점부터 보유 중 60초 블라인드 대기 락 없이 매 1.5초 실시간 3중 다중 익절 타점 스나이퍼 매도 모니터(Case 70, Case 71, Case 72) ·
+순수 롱(SOXL) 전용 '매수 체결 후 최초 60초 강제 타임쉴드(POST_BUY_TO_SELL_SHIELD_SEC = 60.0) &
+매수 후 60초 경과 시점부터 프리마켓·정규장·애프터마켓(16:00 ~ 19:59 EST)·데이마켓(20:00 ~ 03:59 EST) 24시간 전 세션에서
+보유 중 60초 블라인드 대기 락 없이 매 1.5초 실시간 3중 다중 익절 타점 스나이퍼 매도 모니터(Case 70, Case 71, Case 72, Case 79) ·
 1.5초 실시간 감시 중 3중 다중 익절 조건(① 1층 +1.50% 이상 / ② 2~6층 개별 완충층 및 통합 7층 +1.00% 이상 /
-③ 2~7층 통합 이동평균 +1.00% 이상) 도래 즉시 실시간 현재가 재확인 후 그 현재가 지정가(LIMIT) 매도 발주(윗꼬리 익절 기회 상실 원천 차단!) ·
+③ 2~7층 통합 이동평균 +1.00% 이상) 도래 즉시 실시간 현재가 재확인 후 그 현재가 지정가(LIMIT) 매도 발주(장중 및 오버나이트 윗꼬리 익절 기회 상실 원천 차단!) ·
+데이마켓/애프터마켓 브로커 시세 미제공 또는 특정 종목 집중 거래 제한(ATS 제한 · 422 order-hours-closed · stock-restricted 등) 발생 시
+텔레그램 알림 메시지 폭탄 없이 100% 조용히 묵음(Silent) 스킵 및 60초 인메모리 쿨다운 방어(Case 79) ·
 매수 1호가(Bid 1) 참조 및 하향 추격 정정 100% 영구 소각(Case 65) ·
 리앵커링 원가 차감 영구 폐기 및 순수 실물 원가(book_price == actual_avg_price) 100% 보존(Case 69, Case 71, Case 72) ·
-1층 익절 후 상단 2~7층 잔존 시 1층 공석(GRID_L2 ~ GRID_L7) 보존 및 싸이클 최저가(cycle_min_buy_price) 잠금 유지(Case 59, Case 60, Case 71, Case 72, Case 73) ·
+1층 익절 후 상단 2~7층 잔존 시 1층 공석(GRID_L2 ~ GRID_L7) 보존 · l1_target_quota_qty = 0 자동 클리어(Case 78) 및 싸이클 최저가(cycle_min_buy_price) 잠금 유지(Case 59, Case 60, Case 71, Case 72, Case 73) ·
 익절 매도로 가용현금 회복 시 시드고갈 입금 대기 및 단 1회 알림 래치(waiting_reserve_deposit_alert_sent) 자동 해제 &
 0주 전량 졸업 시 온디맨드 예비시드 원금 자동 상환 및 6/6회분 한도 원상 복구(compute_reserve_repayment_on_zero · Case 77) ·
 매도 체결(부분 익절 및 0주 전량 졸업) 즉시 기정산 주문 ID(last_settled_order_ids) 등록 및
 60초 매도타임쉴드(last_sell_fill_ts / last_cycle_end_ts) & 1층 공석 재장전 타임쉴드 클리어(last_reentry_eval_ts = 0.0) &
-15초 잔고 인덱싱 그레이스 쉴드(last_auto_fill_ts) 동시 각인' 코어 플러그인 (Step 04 / 07)
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 77 완벽 준수
+15초 잔고 인덱싱 그레이스 쉴드(last_auto_fill_ts) 동시 각인' 코어 플러그인 (Step 03 / 06)
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 79 완벽 준수
 """
 
 from __future__ import annotations
@@ -44,7 +47,10 @@ from quant_engine import (
     vrev_reanchor_single_tier_quota,
 )
 from quant_indicators_plugin import (
+    is_active_buy_window,
+    is_active_sell_window,
     is_active_trading_window,
+    is_extended_sell_only_window,
     refresh_metrics_with_live_tick,
 )
 from toss_api import (
@@ -68,19 +74,75 @@ POST_SELL_TO_BUY_SHIELD_SEC: float = 60.0
 # 순수 현재가 지정가 매도 주문 발주 후 미체결 최대 대기 시간(초) — 하향 정정 없이 60초 미체결 시 안전 취소
 SELL_ORDER_MAX_WAIT_SEC: float = 60.0
 
+# NEW [Case 79]: 데이마켓/애프터마켓 종목 집중 거래 제한 또는 세션 공백(422 order-hours-closed / stock-restricted 등) 시
+# 알림 메시지 폭탄 없이 조용히 대기하는 인메모리 묵음 쿨다운 시간(초)
+EXTENDED_SELL_RESTRICTION_COOLDOWN_SEC: float = 60.0
+
 
 # ---------------------------------------------------------------------------
-# 내부 헬퍼 : 실시간 SOXL 현재가 조회 · 매수/매도 후 60초 타임쉴드 판별 · Case 69/71/72 순수 원가 하한선
+# 내부 헬퍼 : 실시간 SOXL 현재가 조회 · 장외 거래제한 묵음 쿨다운 · 매수/매도 후 60초 타임쉴드 판별
 # ---------------------------------------------------------------------------
+def mark_extended_sell_restriction_cooldown(
+    context: Any,
+    symbol: str = TARGET_SYMBOL,
+    cooldown_sec: float = EXTENDED_SELL_RESTRICTION_COOLDOWN_SEC,
+    reason: str = "EXTENDED_RESTRICTED",
+) -> None:
+    """
+    # NEW [Case 79 : 데이마켓·애프터마켓 거래 제한/세션 공백 시 100% 묵음(Silent) 인메모리 쿨다운 각인]:
+    데이마켓 등에서 브로커가 특정 종목 거래를 제한하거나 세션 전환 공백으로 주문을 거부했을 때,
+    텔레그램 알림을 발송하지 않고 조용히 cooldown_sec(기본 60초) 동안 재발주 시도를 보류한다.
+    """
+    sym = str(symbol or TARGET_SYMBOL).upper().strip()
+    until_mono = time.monotonic() + max(5.0, safe_float(cooldown_sec, 60.0))
+    snap_map = getattr(context, "exit_snapshot_cache", None)
+    if isinstance(snap_map, dict):
+        entry = snap_map.get(sym) if isinstance(snap_map.get(sym), dict) else {}
+        entry["ext_sell_restrict_until_mono"] = until_mono
+        entry["ext_sell_restrict_reason"] = str(reason or "EXTENDED_RESTRICTED")
+        snap_map[sym] = entry
+
+
+def is_within_extended_sell_restriction_cooldown(
+    context: Any,
+    symbol: str = TARGET_SYMBOL,
+) -> Tuple[bool, float]:
+    """
+    # NEW [Case 79 : 데이마켓·애프터마켓 거래 제한 묵음 쿨다운 작동 여부 판별]:
+    인메모리 묵음 쿨다운이 작동 중이면 (True, 잔여 초)를 반환한다.
+    """
+    sym = str(symbol or TARGET_SYMBOL).upper().strip()
+    snap_map = getattr(context, "exit_snapshot_cache", None)
+    if isinstance(snap_map, dict):
+        entry = snap_map.get(sym)
+        if isinstance(entry, dict):
+            until_m = safe_float(entry.get("ext_sell_restrict_until_mono"), 0.0)
+            rem = until_m - time.monotonic()
+            if rem > 0.0:
+                return True, round(rem, 1)
+    return False, 0.0
+
+
 def _get_live_soxl_price(
     context: Any,
     prices: Dict[str, float],
     holdings: Dict[str, Dict[str, Any]],
     now_est: datetime,
+    allow_stale_fallback: bool = True,
 ) -> float:
+    """
+    # MODIFIED [Case 79]:
+    - 프리장/정규장(allow_stale_fallback=True)에서는 prices -> 캔들 캐시 -> 보유 잔고 last_price 순으로 폴백한다.
+    - 데이마켓/애프터마켓(allow_stale_fallback=False)에서는 브로커가 시세를 제공하지 않는 날
+      정적 종가(holdings.last_price)나 과거 캔들 종가로 오발주하는 일을 막기 위해
+      오직 실시간 시세 API(prices)에서 조회된 가격만 인정한다.
+    """
     lp = safe_float((prices or {}).get(TARGET_SYMBOL), 0.0)
     if lp > 0.0:
         return lp
+    if not allow_stale_fallback:
+        return 0.0
+
     raw_cache = getattr(context, "candle_metrics_cache", {})
     base_met = (
         raw_cache.get(TARGET_SYMBOL) if isinstance(raw_cache, dict) else None
@@ -99,9 +161,10 @@ async def _fetch_fresh_current_soxl_price(
     fallback_price: float = 0.0,
 ) -> float:
     """
-    🚨 Case 65 & Case 70:
+    🚨 Case 65, Case 70 & Case 79:
     1.5초 실시간 매도 모니터에서 익절 타점 도달이 감지된 직후(또는 가격 폴백 필요 시)
     토스 Open API(/api/v1/prices)를 직접 호출하여 가장 최신의 실시간 현재가를 확인한다.
+    (데이마켓 시세 미제공 시에도 예외/알림 없이 조용히 fallback_price 를 반환한다.)
     """
     try:
         fresh_map = await context.api.get_current_prices_batch((TARGET_SYMBOL,))
@@ -117,7 +180,7 @@ async def _fetch_fresh_current_soxl_price(
                     )
             return fresh_p
     except Exception as exc:
-        logger.debug("실시간 현재가 재조회 폴백 사용: %s", exc)
+        logger.debug("실시간 현재가 재조회 폴백 사용(묵음): %s", exc)
     return safe_float(fallback_price, 0.0)
 
 
@@ -271,6 +334,7 @@ def mark_post_sell_time_shield(
         entry["last_reserve_check_ts"] = 0.0
         entry["last_sell_gate_eval_mono"] = 0.0
         entry["last_sell_gate_eval_ts"] = 0.0
+        entry["ext_sell_restrict_until_mono"] = 0.0
         if is_cycle_end:
             entry["last_cycle_end_mono"] = now_mono
             entry["last_cycle_end_ts"] = now_epoch
@@ -417,7 +481,7 @@ def update_exit_snapshot_on_hold(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 1] Case 24, Case 65, Case 70, Case 71 & Case 72 : 순수 현재가 지정가(LIMIT) 다중 그리드 스나이퍼 매도 발주
+# [핵심 1] Case 24, Case 65, Case 70, Case 71, Case 72 & Case 79 : 순수 현재가 지정가(LIMIT) 다중 그리드 스나이퍼 매도 발주
 # ---------------------------------------------------------------------------
 async def execute_bulletproof_sell_sweep(
     context: Any,
@@ -429,10 +493,13 @@ async def execute_bulletproof_sell_sweep(
     pending_sell_indices: Optional[Sequence[int]] = None,
 ) -> Dict[str, Any]:
     """
-    🚨 Case 24, Case 65, Case 70, Case 71 & Case 72:
+    🚨 Case 24, Case 65, Case 70, Case 71, Case 72 & Case 79:
     1.5초 실시간 3중 다중 익절 스나이퍼 매도 발사 시:
     - 오직 목표 익절 지정가(min_floor_price) 이상인 '그 시점의 실시간 현재가 지정가(sweep_price)'로만 LIMIT 매도 주문을 발주한다!
     - 매도 대상 그리드 인덱스 리스트(pending_sell_indices)를 원장에 기록하여 체결 시 정확히 해당 층들만 정산한다.
+    - 🛡️ [Case 79 묵음 방어]: 데이마켓/애프터마켓에서 미국 현지 종목 집중 거래 제한(stock-restricted),
+      세션 공백(order-hours-closed), 매도가능수량 0(장외 주문 제한) 등이 발생할 경우
+      텔레그램 에러 알림을 절대 발송하지 않고 조용히 60초 인메모리 쿨다운(mark_extended_sell_restriction_cooldown) 처리한다!
     """
     sym = str(symbol or TARGET_SYMBOL).upper().strip()
     target_sell_qty = max(1, safe_int(holdings_qty, 1))
@@ -452,6 +519,10 @@ async def execute_bulletproof_sell_sweep(
             if safe_int(x, -1) >= 0
         }
     )
+
+    now_est = datetime.now(EST_TZ)
+    hm_now = now_est.hour * 100 + now_est.minute
+    is_ext_session = is_extended_sell_only_window(hm_now, now_est=now_est)
 
     snap_map: Dict[str, Dict[str, Any]] = getattr(
         context, "exit_snapshot_cache", {}
@@ -489,12 +560,30 @@ async def execute_bulletproof_sell_sweep(
                 pass
 
         sellable_q = 0
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + (1.0 if is_ext_session else 2.0)
         while time.monotonic() < deadline:
             sellable_q = await context.api.get_sellable_quantity(sym)
             if sellable_q >= target_sell_qty or sellable_q > 0:
                 break
             await asyncio.sleep(0.20)
+
+        # Case 79: 데이마켓/애프터마켓에서 종목 거래 제한 등으로 매도가능수량이 0으로 잠겨 있으면 조용히 60초 묵음 쿨다운
+        if is_ext_session and sellable_q <= 0:
+            mark_extended_sell_restriction_cooldown(
+                context,
+                symbol=sym,
+                cooldown_sec=EXTENDED_SELL_RESTRICTION_COOLDOWN_SEC,
+                reason="EXTENDED_SELLABLE_ZERO",
+            )
+            logger.debug(
+                "🔇 [%s] 장외(데이/애프터) 매도가능수량 0 또는 거래제한 감지 -> 알림 없이 60초 묵음 대기",
+                sym,
+            )
+            return {
+                "status": "SILENT_EXTENDED_SELL_RESTRICTED",
+                "symbol": sym,
+                "reason": "EXTENDED_SELLABLE_ZERO",
+            }
 
         final_qty = (
             min(target_sell_qty, sellable_q)
@@ -545,7 +634,66 @@ async def execute_bulletproof_sell_sweep(
                 "reason": reason_tag,
                 "sold_indices": clean_indices,
             }
+        except _NonRetryableApiError as api_err:
+            err_code_l = str(getattr(api_err, "error_code", "") or "").lower()
+            is_restrict_or_closed = any(
+                k in err_code_l
+                for k in (
+                    "order-hours-closed",
+                    "stock-restricted",
+                    "market-closed",
+                    "order-type-not-allowed",
+                    "market-not-supported",
+                    "maintenance",
+                    "internal-error",
+                )
+            )
+            if is_ext_session or is_restrict_or_closed:
+                mark_extended_sell_restriction_cooldown(
+                    context,
+                    symbol=sym,
+                    cooldown_sec=EXTENDED_SELL_RESTRICTION_COOLDOWN_SEC,
+                    reason=err_code_l or "EXTENDED_API_RESTRICTED",
+                )
+                logger.debug(
+                    "🔇 [%s] 장외/종목제한 매도 보류(묵음 쿨다운 60초): %s",
+                    sym,
+                    api_err,
+                )
+                return {
+                    "status": "SILENT_EXTENDED_SELL_RESTRICTED",
+                    "symbol": sym,
+                    "error_code": err_code_l,
+                }
+            logger.error(
+                "🚨 [%s] 스나이퍼 매도 발사(%s) 실패: %s",
+                sym,
+                reason_tag,
+                api_err,
+            )
+            return {
+                "status": "SWEEP_FAILED",
+                "symbol": sym,
+                "error": str(api_err),
+            }
         except Exception as exc:
+            if is_ext_session:
+                mark_extended_sell_restriction_cooldown(
+                    context,
+                    symbol=sym,
+                    cooldown_sec=EXTENDED_SELL_RESTRICTION_COOLDOWN_SEC,
+                    reason="EXTENDED_EXCEPTION",
+                )
+                logger.debug(
+                    "🔇 [%s] 장외 매도 통신 예외(묵음 쿨다운 60초): %s",
+                    sym,
+                    exc,
+                )
+                return {
+                    "status": "SILENT_EXTENDED_SELL_RESTRICTED",
+                    "symbol": sym,
+                    "error": str(exc),
+                }
             logger.error(
                 "🚨 [%s] 스나이퍼 매도 발사(%s) 실패: %s",
                 sym,
@@ -556,7 +704,7 @@ async def execute_bulletproof_sell_sweep(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] 실물 매도 FILLED 정산 · 세후 순익 복리 산입 · 0주 졸업 시 예비시드 자동 상환 · 양방향 쉴드 각인 (Case 69 ~ 77)
+# [핵심 2] 실물 매도 FILLED 정산 · 세후 순익 복리 산입 · Case 78 l1_target_quota_qty 클리어 · 0주 졸업 시 예비시드 자동 상환 · 양방향 쉴드 각인 (Case 69 ~ 79)
 # ---------------------------------------------------------------------------
 async def _commit_filled_sell_and_reanchor_ledger(
     context: Any,
@@ -566,15 +714,16 @@ async def _commit_filled_sell_and_reanchor_ledger(
     settled_order_id: str = "",
 ) -> Dict[str, Any]:
     """
-    🎯 1 ~ 🎯 4 & Case 19, 59, 60, 61, 65, 69, 70, 71, 72, 73, 77:
+    🎯 1 ~ 🎯 4 & Case 19, 59, 60, 61, 65, 69, 70, 71, 72, 73, 77, 78, 79:
     7층 골디락스 멀티 그리드 스나이퍼 매도 주문이 체결(FILLED)되었을 때:
     1) pending_sell_indices (또는 sell_mode)에 해당하는 매도 지층들의 순수 매수 원금(sold_actual_cost_usd)과
        실제 매도 체결가(avg_fill_price)로 왕복 수수료(0.14%) 차감 후 세후 실현 순수익금(net_pnl_usd)을 산출한다.
-    2) 🚨 [Case 71 & Case 72 리앵커링 원가 차감 영구 폐기 및 1층 공석 보존]:
+    2) 🚨 [Case 71, Case 72 & Case 78 리앵커링 원가 차감 영구 폐기 · 1층 공석 보존 · l1_target_quota_qty 클리어]:
        - 남은 지층들의 원가를 인위적으로 차감하지 않고 순수 매수 원가(book_price == actual_avg_price)를 100% 보존한다.
        - 1층이 팔리고 상단 그리드(2층 ~ 7층)만 남은 경우, 상단 2층을 1층으로 승격시키지 않고
          relabel_upper_grid_tiers() 를 통해 GRID_L2 ~ GRID_L7 (1층 공석 상태)로 보존하여
          반등 고점 재매수로 인한 현금 고갈을 원천 차단하고, 싸이클 최저가(cycle_min_buy_price) 잠금을 유지한다!
+       - 1층이 익절되었거나 0주 졸업한 경우 l1_target_quota_qty = 0 으로 즉시 리셋한다(Case 78)!
     3) 🚨 [Case 77 : 익절로 가용현금 회복 시 입금 대기 및 단 1회 알림 래치 해제 & 0주 졸업 시 예비시드 자동 상환]:
        - 익절 매도로 매도 원금과 실현익이 회수되므로 waiting_reserve_deposit = False,
          waiting_reserve_deposit_alert_sent = False, required_reserve_deposit_usd = 0.0 으로 즉시 해제한다.
@@ -607,6 +756,7 @@ async def _commit_filled_sell_and_reanchor_ledger(
         )
         await context.ledger.update_state(
             TARGET_SYMBOL,
+            l1_target_quota_qty=0,
             last_sell_fill_ts=now_empty_epoch,
             last_cycle_end_ts=now_empty_epoch,
             last_sell_gate_eval_ts=0.0,
@@ -706,6 +856,14 @@ async def _commit_filled_sell_and_reanchor_ledger(
                 rem_buckets, max_tiers=MAX_GRID_TIERS_7
             )
 
+    # NEW [Case 78]: 1층 익절 또는 0주 졸업 시 l1_target_quota_qty = 0 자동 클리어
+    rem_has_active_l1 = has_active_l1_bucket(rem_buckets)
+    if not rem_buckets or not rem_has_active_l1 or sold_l1_flag:
+        next_l1_target_q = 0
+    else:
+        prev_target_q = max(0, safe_int(st.get("l1_target_quota_qty"), 0))
+        next_l1_target_q = max(rem_buckets[0].qty, prev_target_q)
+
     sold_q = sum(b.qty for b in sold_buckets)
     sold_actual_cost = sum(b.actual_cost_usd for b in sold_buckets)
     pnl_info = calc_sell_realized_pnl(
@@ -765,7 +923,7 @@ async def _commit_filled_sell_and_reanchor_ledger(
         safe_float(st.get("daily_realized_net_usd"), 0.0) + net_pnl, 4
     )
 
-    # NEW [Case 77 : 0주 전량 졸업 시 온디맨드 예비시드 원금 자동 상환 및 6/6회분 한도 원상 복구]:
+    # [Case 77 : 0주 전량 졸업 시 온디맨드 예비시드 원금 자동 상환 및 6/6회분 한도 원상 복구]:
     init_seed = max(
         100.0, safe_float(st.get("initial_seed_usd"), DEFAULT_INITIAL_SEED_USD)
     )
@@ -827,6 +985,7 @@ async def _commit_filled_sell_and_reanchor_ledger(
         "cycle_min_buy_price": next_cycle_min_p,
         "ratchet_anchor_price": fill_p,
         "cycle_reanchor_credit_usd": 0.0,
+        "l1_target_quota_qty": next_l1_target_q,
         "used_reserve_portions_cnt": next_used_res_cnt,
         "injected_reserve_usd": next_inj_res_usd,
         "cumulative_reserve_repaid_usd": cum_repaid_usd,
@@ -869,6 +1028,10 @@ async def _commit_filled_sell_and_reanchor_ledger(
     context.wakeup_event.set()
     free_cash_now = safe_float(updated_st.get("free_cash_usd"), 0.0)
 
+    now_est_dt = datetime.now(EST_TZ)
+    hm_now = now_est_dt.hour * 100 + now_est_dt.minute
+    is_ext_sell = is_extended_sell_only_window(hm_now, now_est=now_est_dt)
+
     if hasattr(context, "send_slim_alert"):
         sign = "+" if net_pnl >= 0.0 else "-"
         r_sign = "+" if net_rate >= 0.0 else ""
@@ -880,9 +1043,14 @@ async def _commit_filled_sell_and_reanchor_ledger(
                     f" · 💉예비시드 원금 ${repaid_this_time:,.2f} 자동상환 완료"
                     f"(예비한도 {avail_p}/{MAX_RESERVE_PORTIONS}회분 복구!)"
                 )
+            next_entry_guide = (
+                "🔒장외 매수잠금 · 04:07 EST 프리장 개시 후 첫 1층 진입 대기!"
+                if is_ext_sell
+                else "🛡️60초 타임쉴드 경과 후 현재가 조회 및 첫 1층 진입!"
+            )
             note_str = (
                 f"🎓 전 지층 흑자 졸업 완료(0주 싸이클 종료{repay_note} "
-                "➔ 🛡️60초 타임쉴드 경과 후 현재가 조회 및 첫 1층 진입!)"
+                f"➔ {next_entry_guide})"
             )
         else:
             wma_info = compute_upper_2_to_7_moving_avg(rem_buckets)
@@ -892,15 +1060,19 @@ async def _commit_filled_sell_and_reanchor_ledger(
             )
             u_wma_p = safe_float(wma_info.get("upper_wma_price"), 0.0)
             u_wma_t = safe_float(wma_info.get("upper_wma_target_price"), 0.0)
-            rem_has_active_l1 = has_active_l1_bucket(rem_buckets)
             if not rem_has_active_l1:
                 l2_cap_p = safe_float(
                     wma_info.get("min_indiv_upper_price"),
                     rem_buckets[0].book_price,
                 )
+                reload_guide = (
+                    f"🔒장외 매수잠금(04:07 EST 이후 2층상한 ${l2_cap_p:.2f} 이하 1층재장전 · 기억저가 ${next_cycle_min_p:.2f} 잠금)"
+                    if is_ext_sell
+                    else f"🛡️60초 타임쉴드 후 1분 주기 1층재장전(2층상한 ${l2_cap_p:.2f} 이하 · 기억저가 ${next_cycle_min_p:.2f} 잠금)"
+                )
                 note_str = (
                     f"📦 잔여 2~{u_cnt + 1}층({u_cnt}개층·{u_qty}주) 순수이평 ${u_wma_p:.2f}(목표 ${u_wma_t:.2f}) 1.5초 실시간 익절감시 "
-                    f"· 🛡️60초 타임쉴드 후 1분 주기 1층재장전(2층상한 ${l2_cap_p:.2f} 이하 · 기억저가 ${next_cycle_min_p:.2f} 잠금)"
+                    f"· {reload_guide}"
                 )
             else:
                 note_str = (
@@ -908,8 +1080,9 @@ async def _commit_filled_sell_and_reanchor_ledger(
                     f"· 10분게이트 대기(기억저가 ${next_cycle_min_p:.2f} 잠금)"
                 )
 
+        sess_tag = " · 🌃장외익절" if is_ext_sell else ""
         await context.send_slim_alert(
-            title=f"🔴 [SOXL 현재가 지정가 익절 체결 ({mode})] {sold_q}주 @ ${fill_p:.2f} ({r_sign}{net_rate:.2f}%)",
+            title=f"🔴 [SOXL 현재가 지정가 익절 체결 ({mode}{sess_tag})] {sold_q}주 @ ${fill_p:.2f} ({r_sign}{net_rate:.2f}%)",
             body=(
                 f"세후순익 {sign}${abs(net_pnl):,.2f} 시드 복리산입! · "
                 f"{note_str} · 가용현금 ${free_cash_now:,.2f}"
@@ -936,11 +1109,13 @@ async def sync_pending_sell_order_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    🚨 Case 19, Case 24, Case 65, Case 70, Case 71 & Case 72:
+    🚨 Case 19, Case 24, Case 65, Case 70, Case 71, Case 72 & Case 79:
     장부에 대기 중인 미체결 매도 주문(sell_order_id)이 존재할 때:
     1) GET /api/v1/orders/{orderId} 로 FILLED 여부를 조회하여 체결 완료 시
        즉시 _commit_filled_sell_and_reanchor_ledger() 로 복리 정산 및 60초 타임쉴드/15초 그레이스 쉴드 각인을 수행한다.
-    2) 현재가 지정가로 발주된 매도 주문이 60.0초(SELL_ORDER_MAX_WAIT_SEC) 동안 체결되지 않으면,
+    2) 만약 데이마켓/애프터마켓에서 브로커가 주문을 REJECTED(거래 제한 등) 처리하고 체결 수량이 0주인 경우,
+       알림 메시지 폭탄 없이 조용히 60초 인메모리 묵음 쿨다운을 각인하고 주문 ID를 정리한다(Case 79).
+    3) 현재가 지정가로 발주된 매도 주문이 60.0초(SELL_ORDER_MAX_WAIT_SEC) 동안 체결되지 않으면,
        가격을 낮추지 않고 미체결 주문을 안전하게 취소(cancel_order)한 뒤
        1.5초 실시간 타점 감시 상태로 즉시 복귀한다.
     """
@@ -979,6 +1154,13 @@ async def sync_pending_sell_order_plugin(
             )
 
         if ord_status in ("CANCELED", "REJECTED") and filled_q == 0:
+            if ord_status == "REJECTED":
+                mark_extended_sell_restriction_cooldown(
+                    context,
+                    symbol=TARGET_SYMBOL,
+                    cooldown_sec=EXTENDED_SELL_RESTRICTION_COOLDOWN_SEC,
+                    reason="SELL_ORDER_REJECTED",
+                )
             await context.ledger.update_state(
                 TARGET_SYMBOL,
                 sell_order_id="",
@@ -1048,7 +1230,7 @@ async def sync_pending_sell_order_plugin(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 3] 04:07 ~ 16:00 EST 매수 후 최초 60초 타임쉴드 & 이후 보유 중 매 1.5초 실시간 3중 다중 익절 매도 모니터 (Case 69 ~ 75)
+# [핵심 3] 24시간 전 세션(프리·정규·애프터·데이마켓) 매수 후 최초 60초 타임쉴드 & 이후 보유 중 매 1.5초 실시간 3중 다중 익절 매도 모니터 (Case 69 ~ 79)
 # ---------------------------------------------------------------------------
 async def execute_1m_sniper_sell_and_reanchor_plugin(
     context: Any,
@@ -1057,22 +1239,24 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    # [🎯 2 Step 2 & Case 24, 44, 46 ~ 75]:
-    04:07:00 ~ 16:00:00 EST 전 구간에서 작동하는 '매수 후 최초 60.0초 타임쉴드 + 이후 보유 중 매 1.5초 실시간 타점' 3중 다중 익절 스나이퍼 매도(오팔) 모니터:
+    # [🎯 2 Step 2 & Case 24, 44, 46 ~ 79]:
+    프리마켓(04:07 ~ 09:29 EST) · 정규장(09:30 ~ 16:00 EST) · 애프터마켓(16:00 ~ 19:59 EST) · 데이마켓(20:00 ~ 03:59 EST)
+    전 구간(is_active_sell_window)에서 작동하는 '매수 후 최초 60.0초 타임쉴드 + 이후 보유 중 매 1.5초 실시간 타점' 3중 다중 익절 스나이퍼 매도(오팔) 모니터:
     1) 대기 중인 미체결 매도 주문(sell_order_id)이 있으면 먼저 체결 확인을 수행한다.
-    2) 🛡️ [Case 65 매수 후 최초 60.0초 강제 타임쉴드 검문]:
+    2) 🛡️ [Case 79 장외 거래 제한 묵음 쿨다운 검문]:
+       데이마켓/애프터마켓에서 종목 집중 거래 제한 또는 세션 공백으로 60초 묵음 쿨다운이 작동 중이면 조용히 반환한다.
+    3) 🛡️ [Case 65 매수 후 최초 60.0초 강제 타임쉴드 검문]:
        직전 매수 체결로부터 최초 60.0초(POST_BUY_TO_SELL_SHIELD_SEC)가 지나지 않았으면
        일체의 매도 판정을 보류(HOLD_POST_BUY_60S_TIME_SHIELD)하여 매수 직후 호가 휩소를 원천 차단한다!
-    3) ⚡ [Case 70, Case 71 & Case 72 : 매수 후 60.0초 경과 시점부터 60초 블라인드 락 없이 매 1.5초 실시간 3중 다중 익절 판정]:
-       매 1.5초 루프에서 조회된 실시간 현재가(live_p)로 evaluate_multi_grid_sell_targets() 를 즉시 호출하여:
-       - ① 활성 1층(buckets[0]) 단가 대비 +1.50% 이상 도래
-       - ② 상단 2층 ~ 6층 개별 완충층 및 통합 7층 본대 단가 대비 +1.00% 이상 도래
-       - ③ 상단 2층 ~ 7층 통합 이동평균 단가(wma_2_to_7) 대비 +1.00% 이상 도래 (1층 본전 이상 시 전량 졸업)
-       중 하나라도 충족되면 기회의 상실 없이 즉시 _fetch_fresh_current_soxl_price() 로 최신 현재가를 재확인한 뒤,
-       목표 익절 하한가(min_floor_p) 이상인 그 실시간 현재가 지정가(LIMIT)로 매도 주문을 발주한다!
-    4) 🔇 [Case 70 & Case 75 : 목표 미달 시 블라인드 쿨다운 및 불필요한 디스크 쓰기 전면 제거]:
-       현재가가 3대 익절 조건에 미달하면 60초 블라인드 락이나 원장 타임스탬프 쓰기 없이 즉시 반환하여,
-       다음 1.5초 루프에서 윗꼬리(Upper-Wick) 슈팅을 끊김 없이 감시한다!
+    4) ⚡ [Case 70, Case 71, Case 72 & Case 79 : 매수 후 60.0초 경과 시점부터 60초 블라인드 락 없이 매 1.5초 실시간 3중 다중 익절 판정]:
+       - 만약 애프터마켓·데이마켓(is_ext_sell_only == True)에서 브로커가 시세를 제공하지 않는 날(live_p <= 0.0)에는
+         일체의 알림 발송 없이 조용히 묵음 스킵(SILENT_EXTENDED_NO_LIVE_PRICE)한다.
+       - 시세가 정상 조회되면 evaluate_multi_grid_sell_targets() 를 즉시 호출하여:
+         ① 활성 1층(buckets[0]) 단가 대비 +1.50% 이상 도래
+         ② 상단 2층 ~ 6층 개별 완충층 및 통합 7층 본대 단가 대비 +1.00% 이상 도래
+         ③ 상단 2층 ~ 7층 통합 이동평균 단가(wma_2_to_7) 대비 +1.00% 이상 도래 (1층 본전 이상 시 전량 졸업)
+         중 하나라도 충족되면 기회의 상실 없이 즉시 _fetch_fresh_current_soxl_price() 로 최신 현재가를 재확인한 뒤,
+         목표 익절 하한가(min_floor_p) 이상인 그 실시간 현재가 지정가(LIMIT)로 매도 주문을 발주한다!
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     hm = dt_now.hour * 100 + dt_now.minute
@@ -1088,7 +1272,8 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
             now_est=dt_now,
         )
 
-    if not is_active_trading_window(hm):
+    # MODIFIED [Case 79]: 매도 모니터를 애프터마켓 및 데이마켓까지 전 구간 개방 (04:00~04:06 오프닝 안정화 및 주말 휴장만 제외)
+    if not is_active_sell_window(hm, now_est=dt_now):
         return {
             "status": "OUTSIDE_TRADING_WINDOW",
             "did_sell_or_ratchet": False,
@@ -1107,6 +1292,17 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
     if not buckets:
         return {"status": "NO_BUCKETS_HELD", "did_sell_or_ratchet": False}
 
+    # NEW [Case 79]: 장외(데이마켓·애프터마켓) 종목 거래 제한 묵음 쿨다운 확인
+    in_ext_cd, rem_ext_cd = is_within_extended_sell_restriction_cooldown(
+        context, TARGET_SYMBOL
+    )
+    if in_ext_cd:
+        return {
+            "status": "SILENT_HOLD_EXTENDED_RESTRICT_COOLDOWN",
+            "did_sell_or_ratchet": False,
+            "remain_cooldown_sec": rem_ext_cd,
+        }
+
     # 🛡️ 2) [Case 65 & Case 70] 매수 체결 직후 최초 60.0초 호가 안정화 타임쉴드 강제 검문!
     in_buy_shield, remain_buy_sec = is_within_post_buy_time_shield(
         context, st, TARGET_SYMBOL
@@ -1118,14 +1314,28 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
             "remain_shield_sec": remain_buy_sec,
         }
 
-    # ⚡ 3) [Case 70, Case 71 & Case 72] 매수 후 60.0초 경과 -> 매 1.5초 실시간 현재가로 3중 다중 익절 타점 즉시 대조!
-    live_p = _get_live_soxl_price(context, prices, holdings, dt_now)
-    if live_p <= 0.0:
+    # ⚡ 3) [Case 70, Case 71, Case 72 & Case 79] 실시간 현재가 확인 (데이마켓 시세 미제공 시 100% 묵음 스킵!)
+    is_ext_sell_only = is_extended_sell_only_window(hm, now_est=dt_now)
+    live_p = _get_live_soxl_price(
+        context,
+        prices,
+        holdings,
+        dt_now,
+        allow_stale_fallback=(not is_ext_sell_only),
+    )
+    if live_p <= 0.0 and not is_ext_sell_only:
         live_p = await _fetch_fresh_current_soxl_price(
             context, fallback_price=0.0
         )
     if live_p <= 0.0:
-        return {"status": "NO_LIVE_PRICE", "did_sell_or_ratchet": False}
+        return {
+            "status": (
+                "SILENT_EXTENDED_NO_LIVE_PRICE"
+                if is_ext_sell_only
+                else "NO_LIVE_PRICE"
+            ),
+            "did_sell_or_ratchet": False,
+        }
 
     h_info = (holdings or {}).get(TARGET_SYMBOL, {})
     h_qty = safe_int(h_info.get("qty"), sum(b.qty for b in buckets))
@@ -1140,7 +1350,7 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
         held_lots=held_lots, threshold_mode=threshold_mode
     )
 
-    # 🎯 4) [Case 70 ~ 72] 1층(+1.50%) · 2~6층 개별 및 통합 7층(+1.00%) · 2~7층 통합 이동평균(+1.00%) 실시간 판정!
+    # 🎯 4) [Case 70 ~ 72 & Case 79] 1층(+1.50%) · 2~6층 개별 및 통합 7층(+1.00%) · 2~7층 통합 이동평균(+1.00%) 실시간 판정!
     sell_eval = evaluate_multi_grid_sell_targets(
         buckets=buckets,
         live_price=live_p,
@@ -1151,8 +1361,15 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
     if bool(sell_eval.get("should_sell")):
         # 익절 조건 도래 즉시 최신 실시간 현재가를 1회 재확인하여 추가 슈팅분까지 반영
         fresh_live_p = await _fetch_fresh_current_soxl_price(
-            context, fallback_price=live_p
+            context,
+            fallback_price=(0.0 if is_ext_sell_only else live_p),
         )
+        if is_ext_sell_only and fresh_live_p <= 0.0:
+            return {
+                "status": "SILENT_EXTENDED_NO_FRESH_LIVE_PRICE",
+                "did_sell_or_ratchet": False,
+            }
+
         eff_live_p = max(live_p, fresh_live_p)
         fresh_eval = evaluate_multi_grid_sell_targets(
             buckets=buckets,
@@ -1183,9 +1400,17 @@ async def execute_1m_sniper_sell_and_reanchor_plugin(
             reason_tag=reason_tag,
             pending_sell_indices=sold_indices,
         )
+        did_order = str(sweep_res.get("status") or "") in (
+            "NEW_SELL_SWEEP_OK",
+            "SELL_ORDER_ALREADY_ACTIVE",
+        )
         return {
-            "status": "SNIPER_MULTI_GRID_SELL_ORDERED",
-            "did_sell_or_ratchet": True,
+            "status": (
+                "SNIPER_MULTI_GRID_SELL_ORDERED"
+                if did_order
+                else str(sweep_res.get("status") or "SILENT_EXTENDED_HOLD")
+            ),
+            "did_sell_or_ratchet": did_order,
             "sell_mode": reason_tag,
             "sold_indices": sold_indices,
             "qty": sell_qty,
