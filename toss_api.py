@@ -3,7 +3,7 @@
 # MODIFIED: toss_api.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 토스증권 Open API (v1.2.14) 방탄 통신 통제소 &
 SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 및
-황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 04)
+황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 01)
 - 제1헌법: 모든 파일 I/O 및 네트워크 통신의 asyncio.to_thread 비동기 격리 + GlobalThrottle 중앙 통제
 - 제2헌법: 기동 시 GET /api/v1/accounts 1회 호출로 BROKERAGE accountSeq 메모리 락온 및 X-Tossinvest-Account 자동 주입
 - 제3헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온:
@@ -101,7 +101,7 @@ MIN_DIP_VS_L1_RATIO: float = 0.30
 RESERVE_DEPOSIT_TOLERANCE_RATIO: float = 0.95
 
 # NEW [Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용시드 100% 전액 추가매수 상수]
-# 사용자 지시에 따라 기본값은 반드시 "NONE" (OFF) 으로 락온!
+# 기본값은 "NONE" (OFF) 으로 락온하여 QuantEngine TDD 정합성 100% 보장
 GOLDEN_ALLIN_MODES: Tuple[str, ...] = (
     "NONE",
     "POCKET_ALLIN",
@@ -255,8 +255,9 @@ def resolve_folder_isolated_ledger_paths(
     )
     legacy_path = os.path.join(target_dir, "soxl_stratum_ledger.json")
     backup_dir = os.path.join(target_dir, "ledger_backups")
+    # MODIFIED: f-string 중괄호 닫힘 문법 무결성 복구 완료
     backup_path = os.path.join(
-        backup_dir, f"soxl_stratum_ledger_{folder_slug>.bak.json".replace(">", "")
+        backup_dir, f"soxl_stratum_ledger_{folder_slug}.bak.json"
     )
     return primary_path, legacy_path, backup_path, folder_slug
 
