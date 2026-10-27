@@ -3,14 +3,16 @@
 # MODIFIED: quant_indicators_plugin.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(SOXL) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 지층관리 스나이퍼
-시계열 100% 벡터화 지표 엔진 및 10분 고정 매수 게이트 버킷 산출 코어 모듈 (Step 02 / 06)
-- 제4헌법 & Case 01 & Case 79:
+시계열 100% 벡터화 지표 엔진 · 10분 고정 매수 게이트 버킷 산출 및 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 실시간 판정 코어 모듈 (Step 04 / 10)
+- 제4헌법 & Case 01, Case 79 & Case 80:
   1) 모든 시계열 및 세션 경계 연산은 미국 동부 시간(EST_TZ = ZoneInfo('America/New_York')) 단일 소스 락온
   2) 매수 허용 시간창(is_active_buy_window : 평일 04:07 ~ 16:00 EST)과
      익절 매도 허용 시간창(is_active_sell_window : 04:00 ~ 04:06 EST 오프닝 안정화 및 주말 휴장 외
      프리마켓 · 정규장 · 애프터마켓[16:00 ~ 19:59 EST] · 데이마켓[20:00 ~ 03:59 EST] 전 구간) 엄격 분리!
   3) 금요일 애프터마켓(16:00 ~ 19:59 EST) 익절 매도를 허용하기 위해 주말 휴장 구간을
      금요일 20:00 EST ~ 일요일 17:59 EST 로 제어 (일요일 18:00 EST 이후 월요일 데이마켓 정상 개방)
+  4) 🌟 [Case 80] 미동부 프리장 황금시간대(is_golden_allin_time_window : 평일 07:00 ~ 07:50 EST) 판별기 및
+     매 1.5초 실시간 현재가(live_price) 틱 유입 시 Wilder's RSI(14) O(1) 상수 시간 무부하 합성 탑재!
 - Case 36 & Case 64: 04:07 ~ 16:00 EST 구간 10분 고정 매수 게이트(LOCKED_BUY_INTERVAL_MIN = 10) 버킷 산출 및
   동일 버킷 내 중복 평가 원천 차단(evaluate_buy_gate_bucket_status)
 - 벡터화 강제: Pandas DataFrame / NumPy 배열 연산 시 for 루프를 100% 배제하고 벡터화 수식으로만
@@ -30,6 +32,9 @@ import pandas as pd
 
 from toss_api import (
     EST_TZ,
+    GOLDEN_RSI_MAX_THRESHOLD,
+    GOLDEN_WINDOW_END_HM,
+    GOLDEN_WINDOW_START_HM,
     LOCKED_BUY_INTERVAL_MIN,
     TARGET_SYMBOL,
     safe_float,
@@ -45,7 +50,7 @@ REGULAR_START_MIN_OF_DAY: int = 9 * 60 + 30  # 570 (09:30 EST)
 
 
 # ---------------------------------------------------------------------------
-# [핵심 1] 매수 시간창(04:07 ~ 16:00 EST) vs 익절 매도 시간창(24시간 전 세션) 및 주말 휴장 판별기 (Case 01 & Case 79)
+# [핵심 1] 매수 시간창(04:07 ~ 16:00 EST) · 황금시간창(07:00 ~ 07:50 EST) vs 익절 매도 시간창(24시간 전 세션) 판별기 (Case 01, 79, 80)
 # ---------------------------------------------------------------------------
 def is_weekend_nyse_closed(now_est: Optional[datetime] = None) -> bool:
     """
@@ -72,8 +77,9 @@ def is_active_buy_window(
     hm: int, now_est: Optional[datetime] = None
 ) -> bool:
     """
-    # NEW [🎯 2 & Case 01, Case 79 : 매수 전용 시간창 (평일 04:07 ~ 16:00 EST 엄격 제한)]:
-    - 모든 매수(0주 첫 진입 REENTRY_1FL · 1층 미체결 잔량 TOPUP_1FL · 1층 공석 60초 주기 재장전 · 10분 와이드/스텝업 추매 DIP_1FL)는
+    # [🎯 2 & Case 01, Case 79, Case 80 : 매수 전용 시간창 (평일 04:07 ~ 16:00 EST 엄격 제한)]:
+    - 모든 매수(0주 첫 진입 REENTRY_1FL · 07:00~07:50 황금시간 전액매수 · 1층 미체결 잔량 TOPUP_1FL ·
+      1층 공석 60초 주기 재장전 · 10분 와이드/스텝업 추매 DIP_1FL)는
       오직 평일(월~금) 프리장 개시(04:07 EST)부터 정규장 마감(16:00 EST)까지만 허용한다.
     - 애프터마켓(16:01 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST, 일요일 저녁 포함)에서는 매수를 100% 차단(False)한다.
     """
@@ -95,12 +101,30 @@ def is_active_trading_window(
     return is_active_buy_window(hm, now_est=now_est)
 
 
+def is_golden_allin_time_window(
+    hm: Optional[int] = None, now_est: Optional[datetime] = None
+) -> bool:
+    """
+    # NEW [Case 80 : 미동부 프리장 황금시간대(평일 07:00:00 ~ 07:50:59 EST) 판별기]:
+    - 평일(월~금) 미동부 프리장 07:00 ~ 07:50 EST (700 <= hm <= 750) 구간일 때만 True 를 반환한다.
+    """
+    dt = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
+    if is_weekend_nyse_closed(dt) or dt.weekday() >= 5:
+        return False
+    hm_int = (
+        safe_int(hm, dt.hour * 100 + dt.minute)
+        if hm is not None
+        else (dt.hour * 100 + dt.minute)
+    )
+    return GOLDEN_WINDOW_START_HM <= hm_int <= GOLDEN_WINDOW_END_HM
+
+
 def is_active_sell_window(
     hm: int, now_est: Optional[datetime] = None
 ) -> bool:
     """
-    # NEW [🎯 2 & Case 79 : 익절 매도 전용 확장 시간창 (프리마켓 + 정규장 + 애프터마켓 + 데이마켓 전 구간 개방)]:
-    - 오버나이트를 하면서도 목표 익절가(1층 +1.50% / 2~7층 개별 및 이동평균 +1.00%)에 도달하면
+    # [🎯 2 & Case 79, Case 80 : 익절 매도 전용 확장 시간창 (프리마켓 + 정규장 + 애프터마켓 + 데이마켓 전 구간 개방)]:
+    - 오버나이트를 하면서도 목표 익절가(골든포켓 +1.50% / 1층 +1.50% / 2~7층 개별 및 이동평균 +1.00%)에 도달하면
       애프터마켓(16:00 ~ 19:59 EST)과 데이마켓(20:00 ~ 03:59 EST)에서도 즉시 지정가 익절 매도가 나가도록 개방한다.
     - 오직 04:00 ~ 04:06 EST 프리장 오프닝 안정화 구간(7분)과 주말 휴장(금 20:00 ~ 일 17:59 EST)에만 매도 모니터를 멈춘다.
     """
@@ -118,7 +142,7 @@ def is_extended_sell_only_window(
     hm: int, now_est: Optional[datetime] = None
 ) -> bool:
     """
-    # NEW [Case 79 : 장외 익절 매도 전용 구간(애프터마켓 · 데이마켓) 여부 판별기]:
+    # [Case 79 : 장외 익절 매도 전용 구간(애프터마켓 · 데이마켓) 여부 판별기]:
     현재 시각이 익절 매도는 열려 있으나(is_active_sell_window == True)
     신규/추가 매수는 잠겨 있는(is_active_buy_window == False) 애프터마켓 또는 데이마켓 구간인지 판별한다.
     """
@@ -130,8 +154,8 @@ def is_extended_sell_only_window(
 
 def get_market_session_label(now_est: Optional[datetime] = None) -> str:
     """
-    # MODIFIED [Case 79]:
-    현재 EST 시각에 따른 세션 상태 라벨(애프터장 · 데이장 익절감시 및 매수잠금 상태 명시)을 반환한다.
+    # MODIFIED [Case 79 & Case 80]:
+    현재 EST 시각에 따른 세션 상태 라벨(황금시간대 · 애프터장 · 데이장 익절감시 및 매수잠금 상태 명시)을 반환한다.
     """
     dt = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     if is_weekend_nyse_closed(dt):
@@ -139,6 +163,8 @@ def get_market_session_label(now_est: Optional[datetime] = None) -> str:
     hm = dt.hour * 100 + dt.minute
     if 400 <= hm <= 406:
         return "🌅 프리장 오프닝 안정화(04:00~04:06)"
+    if 700 <= hm <= 750 and dt.weekday() < 5:
+        return "🌟 프리장 황금시간 가동(07:00~07:50)"
     if 407 <= hm <= 929 and dt.weekday() < 5:
         return "🔫 프리장 스나이퍼 가동(04:07~09:29)"
     if 930 <= hm <= 1600 and dt.weekday() < 5:
@@ -149,7 +175,7 @@ def get_market_session_label(now_est: Optional[datetime] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 산출기 (Case 01, 36, 64, 79)
+# [핵심 2] 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 산출기 (Case 01, 36, 64, 79, 80)
 # ---------------------------------------------------------------------------
 def evaluate_buy_gate_bucket_status(
     now_est: Optional[datetime] = None,
@@ -158,7 +184,7 @@ def evaluate_buy_gate_bucket_status(
     last_evaluated_date: str = "",
 ) -> Tuple[bool, int, str, Dict[str, Any]]:
     """
-    🚨 Case 01, Case 36, Case 64 & Case 79:
+    🚨 Case 01, Case 36, Case 64, Case 79 & Case 80:
     04:07 EST 기점 10분 고정 매수 게이트(04:07, 04:17, 04:27, ..., 15:57 및 16:00 마감봉)의
     현재 버킷 ID(cur_bucket_id)와 게이트 오픈 여부(is_gate_open), 차기 검문 시각(next_gate_hm_str)을 산출한다.
     - 애프터마켓(16:01 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST)에서는 is_active_buy_window == False 이므로
@@ -181,6 +207,7 @@ def evaluate_buy_gate_bucket_status(
             {
                 "is_active_window": False,
                 "is_sell_window_open": is_active_sell_window(hm, now_est=dt),
+                "is_golden_window": False,
                 "mins_from_0407": -1,
                 "bucket_10m": -1,
                 "is_exact_boundary_min": False,
@@ -218,6 +245,7 @@ def evaluate_buy_gate_bucket_status(
     info: Dict[str, Any] = {
         "is_active_window": True,
         "is_sell_window_open": True,
+        "is_golden_window": is_golden_allin_time_window(hm, now_est=dt),
         "mins_from_0407": mins_from_0407,
         "bucket_10m": cur_bucket_id,
         "is_exact_boundary_min": is_exact_boundary,
@@ -291,12 +319,19 @@ def _compute_vectorized_heikin_ashi_and_rsi(
     closes: np.ndarray,
 ) -> Dict[str, Any]:
     """
-    100% 벡터화(Wilder's EWM & Heikin-Ashi EWM) 연산으로 직전 봉 기저 및 현재 HA 양/음봉 상태와 RSI(14)를 산출한다.
+    # MODIFIED [Case 80]:
+    100% 벡터화(Wilder's EWM & Heikin-Ashi EWM) 연산으로 직전 봉 기저 및 현재 HA 양/음봉 상태와 RSI(14)를 산출하고,
+    1.5초 실시간 틱 합성 시 O(1) 상수 시간에 RSI(14)를 갱신할 수 있도록
+    직전 완성봉 종가(prev_bar_close)와 평균 상승/하락폭(prev_avg_gain, prev_avg_loss)을 함께 반환한다.
     """
     n = len(closes)
     if n == 0:
         return {
             "rsi_14": 50.0,
+            "rsi_ready": False,
+            "prev_bar_close": 0.0,
+            "prev_avg_gain": 0.0,
+            "prev_avg_loss": 0.0,
             "ha_open": 0.0,
             "ha_close": 0.0,
             "prev_ha_open": 0.0,
@@ -327,8 +362,12 @@ def _compute_vectorized_heikin_ashi_and_rsi(
     prev_ha_close = float(ha_close_arr[-2]) if n >= 2 else cur_ha_close
     is_bull = bool(cur_ha_close >= cur_ha_open)
 
-    # Wilder's RSI(14) 벡터화 연산 (8칸 표준 들여쓰기 고정)
+    # Wilder's RSI(14) 벡터화 연산 및 직전 봉(n-2) EWM 기저값 추출 (Case 80)
     rsi_val = 50.0
+    prev_bar_close = float(closes[-2]) if n >= 2 else float(closes[-1])
+    prev_avg_g = 0.0
+    prev_avg_l = 0.0
+
     if n >= 3:
         s_close = pd.Series(closes)
         delta = s_close.diff()
@@ -342,6 +381,8 @@ def _compute_vectorized_heikin_ashi_and_rsi(
         ).mean()
         last_g = float(avg_gain.iloc[-1])
         last_l = float(avg_loss.iloc[-1])
+        prev_avg_g = float(avg_gain.iloc[-2])
+        prev_avg_l = float(avg_loss.iloc[-2])
         if last_l <= 1e-12:
             rsi_val = 100.0 if last_g > 0.0 else 50.0
         else:
@@ -350,6 +391,10 @@ def _compute_vectorized_heikin_ashi_and_rsi(
 
     return {
         "rsi_14": round(rsi_val, 2),
+        "rsi_ready": bool(n >= 14),
+        "prev_bar_close": round(prev_bar_close, 4),
+        "prev_avg_gain": round(prev_avg_g, 6),
+        "prev_avg_loss": round(prev_avg_l, 6),
         "ha_open": round(cur_ha_open, 4),
         "ha_close": round(cur_ha_close, 4),
         "prev_ha_open": round(prev_ha_open, 4),
@@ -419,16 +464,17 @@ def compute_soxl_quant_metrics_1m(
     daily_candles: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    🎯 2 & Case 01, 15, 79:
+    🎯 2 & Case 01, 15, 79, 80:
     토스 Open API 1분봉(candles) 및 일봉(daily_candles)을 입력받아:
     1) 당일 프리장(04:00 ~ 09:29 EST) VWAP · 고/저가 진폭 · 예상 변동 밴드
     2) 당일 정규장(09:30 ~ 16:00 EST) VWAP · 고/저가 진폭 · 예상 변동 밴드
-    3) 최근 5영업일 평균 진폭(5MA) 및 실시간 하이킨 아시 추세 배지(🕯️HA양봉 / 🌑HA음봉)
-    4) 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 정보
+    3) 최근 5영업일 평균 진폭(5MA) 및 실시간 하이킨 아시 추세 배지(🕯️HA양봉 / 🌑HA음봉) · Wilder's RSI(14)
+    4) 04:07 ~ 16:00 EST 10분 고정 매수 게이트 버킷 및 황금시간대(07:00 ~ 07:50 EST) 정보
     를 100% 벡터화 연산으로 산출하여 반환한다.
     (Case 79: 데이마켓/애프터마켓에서 브로커가 시세·캔들을 제공하지 않는 경우에도 경고 로그나 알림 없이 조용히 묵음 반환)
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
+    hm_now = dt_now.hour * 100 + dt_now.minute
     _, cur_bucket_id, today_str, gate_info = evaluate_buy_gate_bucket_status(
         now_est=dt_now, buy_interval_min=LOCKED_BUY_INTERVAL_MIN
     )
@@ -439,6 +485,10 @@ def compute_soxl_quant_metrics_1m(
         "live_price": round(lp, 4),
         "ma5_amp_pct": 6.50,
         "rsi_14": 50.0,
+        "rsi_ready": False,
+        "prev_bar_close": 0.0,
+        "prev_avg_gain": 0.0,
+        "prev_avg_loss": 0.0,
         "ha_open": round(lp, 4),
         "ha_close": round(lp, 4),
         "prev_ha_open": round(lp, 4),
@@ -465,6 +515,7 @@ def compute_soxl_quant_metrics_1m(
         "day_low": 0.0,
         "day_amp_pct": 0.0,
         "bucket_10m": cur_bucket_id,
+        "is_golden_window": is_golden_allin_time_window(hm_now, now_est=dt_now),
         "next_gate_hm_str": gate_info.get("next_gate_hm_str", "04:07 EST"),
         "session_label": gate_info.get("session_label", ""),
         "updated_est": dt_now.strftime("%m-%d %H:%M:%S EST"),
@@ -595,7 +646,7 @@ def compute_soxl_quant_metrics_1m(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 4] 실시간 틱(live_price) O(1) 무부하 합성기 (refresh_metrics_with_live_tick)
+# [핵심 4] 실시간 틱(live_price) O(1) 무부하 합성기 (refresh_metrics_with_live_tick — Case 80 RSI 합성 포함)
 # ---------------------------------------------------------------------------
 def refresh_metrics_with_live_tick(
     base_metrics: Optional[Dict[str, Any]],
@@ -603,9 +654,10 @@ def refresh_metrics_with_live_tick(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
+    # MODIFIED [Case 80]:
     캔들 레이더 스캔 주기(5.0초) 사이사이에 유입되는 실시간 현재가(live_price)를
     O(1) 상수 시간으로 기존 지표 딕셔너리에 합성하여 실시간 고/저가 진폭, 예상 밴드,
-    하이킨 아시 양/음봉 배지 및 10분 게이트 시각을 최신 상태로 유지한다.
+    하이킨 아시 양/음봉 배지, Wilder's RSI(14) 및 10분 게이트/황금시간대 시각을 최신 상태로 유지한다.
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     hm = dt_now.hour * 100 + dt_now.minute
@@ -623,7 +675,7 @@ def refresh_metrics_with_live_tick(
     ma5_amp = max(1.0, safe_float(met.get("ma5_amp_pct"), 6.50))
     amp_ratio = ma5_amp / 100.0
 
-    # 1) 실시간 틱 기반 Heikin-Ashi 양/음봉 O(1) 합성
+    # 1) 실시간 틱 기반 Heikin-Ashi 양/음봉 및 Wilder's RSI(14) O(1) 합성 (Case 80)
     if lp > 0.0:
         prev_ho = safe_float(met.get("prev_ha_open"), lp)
         prev_hc = safe_float(met.get("prev_ha_close"), lp)
@@ -644,6 +696,22 @@ def refresh_metrics_with_live_tick(
         met["ha_close"] = round(live_ha_close, 4)
         met["ha_bull"] = is_bull
         met["ha_badge"] = "🕯️HA양봉" if is_bull else "🌑HA음봉"
+
+        prev_b_close = safe_float(met.get("prev_bar_close"), 0.0)
+        prev_avg_g = safe_float(met.get("prev_avg_gain"), -1.0)
+        prev_avg_l = safe_float(met.get("prev_avg_loss"), -1.0)
+        if prev_b_close > 0.0 and (prev_avg_g > 0.0 or prev_avg_l > 0.0):
+            diff = lp - prev_b_close
+            cur_g = max(0.0, diff)
+            cur_l_val = max(0.0, -diff)
+            live_avg_g = (max(0.0, prev_avg_g) * 13.0 + cur_g) / 14.0
+            live_avg_l = (max(0.0, prev_avg_l) * 13.0 + cur_l_val) / 14.0
+            if live_avg_l <= 1e-12:
+                live_rsi = 100.0 if live_avg_g > 0.0 else 50.0
+            else:
+                rs = live_avg_g / live_avg_l
+                live_rsi = 100.0 - (100.0 / (1.0 + rs))
+            met["rsi_14"] = round(live_rsi, 2)
 
     # 2) 현재 세션(프리장 04:00 ~ 09:29 / 정규장 09:30 ~ 16:00) 고/저가 및 예상 밴드 실시간 갱신
     if lp > 0.0 and 400 <= hm <= 929:
@@ -672,6 +740,7 @@ def refresh_metrics_with_live_tick(
             met["regular_vwap"] = round(lp, 4)
 
     met["bucket_10m"] = cur_bucket_id
+    met["is_golden_window"] = is_golden_allin_time_window(hm, now_est=dt_now)
     met["next_gate_hm_str"] = gate_info.get("next_gate_hm_str", "04:07 EST")
     met["session_label"] = gate_info.get("session_label", "")
     met["updated_est"] = dt_now.strftime("%m-%d %H:%M:%S EST")

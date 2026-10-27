@@ -4,7 +4,10 @@
 순수 롱(SOXL) 전용 '04:07 ~ 16:00 EST 매도(및 0주 싸이클 종료) 후 60초 강제 타임쉴드(POST_SELL_TO_BUY_SHIELD_SEC = 60.0) &
 직전 매수 후 60초 타임쉴드 · 60초 경과 후 실시간 현재가 직접 조회 및 순수 현재가 지정가(LIMIT) 매수 발주 ·
 매도 1호가(Ask 1) 참조 및 10초 후 상향 추격 정정 100% 영구 소각(Case 65) ·
-최종 확정 진화 챔피언(💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 / 🔥 03_7G_PURE_10_01 진화형 · Case 71 ~ Case 78) :
+최종 확정 진화 챔피언(🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 71 ~ Case 80) :
+미동부 프리장 황금시간대(07:00 ~ 07:50 EST & 14봉 이상 확보된 1분봉 Wilder RSI(14) <= 19.0) 도달 시 제어반 선택 모드(POCKET_ALLIN / GRID_L1_ALLIN)에 따른
+가용 현금 시드(free_cash_usd) 100% 전액 추가매수 발주 및 독립 골든포켓(golden_pocket) 분리 정산(Case 80) ·
+독립 골든포켓 가동 중 그리드 0주 상태에서 불필요한 1.5초 시세 조회 차단(HOLD_ZERO_GRID_CASH_IN_GOLDEN_POCKET · Case 80) ·
 0주 상태 60초 타임쉴드 경과 후 현재가 지정가 실물 1층(REENTRY_1FL) 산입 ·
 활성 1층 부분 체결(buckets[0].qty < l1_target_quota_qty) 시 체결 수량 비례 자투리 정산 &
 매수 후 60초 타임쉴드 경과 뒤 매 1.5초 실시간 모니터에서 현재가 <= 1층 단가(buckets[0].book_price) 재도래 시
@@ -16,14 +19,16 @@
 활성 1층 보유 중 정적 기억 사이클 최저 매수가(cycle_min_buy_price) 기본 잠금 기반 10분 고정 4단 와이드 활주로 시드보호 매수 게이트(WIDE_RUNWAY :
 1~4회 -1.0% / 5~8회 -2.0% / 9~10회 -3.5% / 11회+ -5.5%) 및 STEP2X_15PCT_C20 3중 안전문(2개층 이하 & 가용현금 20.0%+ & 저점대비 2.0배+ 반등 시
 활성 1층 대비 -15.0% 스텝업 저가 해금 · Case 76) ·
-30% 자투리 1주 승격 방지 가드(GUARD30) & 시드고갈 시 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent) &
+30% 자투리 1주 승격 방지 가드(GUARD30) & 예수금 API 일시 오류(0.0 반환) 시 재시도 및 허위 시드고갈 알림 차단 &
+시드고갈 시 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent) &
 토스 실계좌 여유자금(1회분 이상) 입금 자동 감지 기반 최대 +6회분 온디맨드 예비시드 자동 수혈(Case 77) ·
-체결 시 1~7층 순수 멀티 그리드 승격·자투리 시드 귀속·기정산 주문 ID(last_settled_order_ids) 각인·양방향 인덱싱 보호(Case 69, Case 71 ~ 78)' 코어 플러그인 (Step 03 / 05)
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 78 완벽 준수
+체결 시 1~7층 순수 멀티 그리드 승격·자투리 시드 귀속·기정산 주문 ID(last_settled_order_ids) 각인·양방향 인덱싱 보호(Case 69, Case 71 ~ 80)' 코어 플러그인 (Step 03 / 04)
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 완벽 준수
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -32,26 +37,43 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from quant_engine import (
     BASE_MAX_LOTS_8PCT,
+    DEFAULT_GOLDEN_ALLIN_MODE,
+    GOLDEN_ALLIN_MODES,
+    GOLDEN_POCKET_RISE_PCT,
+    GOLDEN_RSI_MAX_THRESHOLD,
+    GoldenAllInPocket,
     MAX_GRID_TIERS_7,
     MAX_GRID_TIERS_12,
     MAX_RESERVE_PORTIONS,
+    MIN_DIP_BUDGET_RATIO,
+    MIN_DIP_VS_L1_RATIO,
+    PORTION_RATIO_LOCKED,
+    ROUND_TRIP_FEE_RATE_PCT,
     buckets_from_dicts,
     buckets_to_dicts,
     compute_golden8_quota_qty,
     compute_upper_2_to_7_moving_avg,
     compute_upper_2_to_12_moving_avg,
+    evaluate_golden_allin_signal,
     evaluate_guard30_and_reserve_injection,
     evaluate_l2_only_hybrid_reentry_signal,
     evaluate_step_up_2x_dip_signal,
     get_golden8_prog_thresholds,
+    get_golden_allin_mode_label,
+    has_active_golden_pocket,
     has_active_l1_bucket,
+    pocket_from_dict,
+    pocket_to_dict,
     resolve_affordable_buy_qty,
+    resolve_allin_affordable_buy_qty,
     summarize_stratum_portfolio,
     vrev_add_quota_lot_and_merge_2tier,
 )
 from quant_indicators_plugin import (
     evaluate_buy_gate_bucket_status,
+    is_active_buy_window,
     is_active_trading_window,
+    is_golden_allin_time_window,
     refresh_metrics_with_live_tick,
 )
 from sniper_exit_plugin import (
@@ -104,7 +126,7 @@ RESERVE_DEPOSIT_CHECK_INTERVAL_SEC: float = 60.0
 
 
 # ---------------------------------------------------------------------------
-# 내부 헬퍼 : 매수·매도 체결 직후 잔고 인덱싱 시차 보호 그레이스 쉴드 & 60초 타임쉴드 각인 (Case 61, 65, 69, 73, 77)
+# 내부 헬퍼 : 매수·매도 체결 직후 잔고 인덱싱 시차 보호 그레이스 쉴드 & 60초 타임쉴드 각인 (Case 61, 65, 69, 73, 77, 80)
 # ---------------------------------------------------------------------------
 def mark_auto_fill_grace_shield(
     context: Any,
@@ -114,12 +136,12 @@ def mark_auto_fill_grace_shield(
     filled_qty: int = 0,
 ) -> None:
     """
-    🚨 Case 61, Case 65, Case 69, Case 73 & Case 77:
+    🚨 Case 61, Case 65, Case 69, Case 73, Case 77 & Case 80:
     1) 매수(또는 매도) 주문이 거래소에서 FILLED 된 직후 토스 잔고 API(/api/v1/holdings) 인덱싱 시차(0.1 ~ 0.4초) 동안
        잔고 동기화 모듈(reconcile)이 시차를 수동 매매로 오판하지 않도록 15.0초 그레이스 쉴드(last_auto_fill_ts)를 각인한다.
     2) 매수 체결 시에는 last_buy_fill_mono(단조 시계)와 last_buy_fill_ts(Epoch)를 전용 키로 각인하여,
        매수 체결 후 정확히 60.0초(POST_BUY_TO_SELL_SHIELD_SEC) 동안 매도 및 중복 매수가 발사되지 않도록 타임쉴드를 건다!
-    3) 매수 체결로 1층이 채워지면 1층 공석 재장전 모니터 타임쉴드(last_reentry_eval_mono / last_reentry_eval_ts) 및
+    3) 그리드 매수 체결로 1층이 채워지면 1층 공석 재장전 모니터 타임쉴드(last_reentry_eval_mono / last_reentry_eval_ts) 및
        예비시드 입금 대기 타임쉴드(last_reserve_check_mono / last_reserve_check_ts)는 0.0 으로 리셋한다.
     """
     sym = str(symbol or TARGET_SYMBOL).upper().strip()
@@ -138,8 +160,9 @@ def mark_auto_fill_grace_shield(
         if tag != "SELL_FILL":
             updated["last_buy_fill_mono"] = now_mono
             updated["last_buy_fill_ts"] = now_epoch
-            updated["last_reentry_eval_mono"] = 0.0
-            updated["last_reentry_eval_ts"] = 0.0
+            if tag != "GOLDEN_POCKET":
+                updated["last_reentry_eval_mono"] = 0.0
+                updated["last_reentry_eval_ts"] = 0.0
             updated["last_reserve_check_mono"] = 0.0
             updated["last_reserve_check_ts"] = 0.0
         else:
@@ -153,8 +176,9 @@ def mark_auto_fill_grace_shield(
             s_entry = (
                 snap_map.get(sym) if isinstance(snap_map.get(sym), dict) else {}
             )
-            s_entry["last_reentry_eval_mono"] = 0.0
-            s_entry["last_reentry_eval_ts"] = 0.0
+            if tag != "GOLDEN_POCKET":
+                s_entry["last_reentry_eval_mono"] = 0.0
+                s_entry["last_reentry_eval_ts"] = 0.0
             s_entry["last_reserve_check_mono"] = 0.0
             s_entry["last_reserve_check_ts"] = 0.0
             snap_map[sym] = s_entry
@@ -165,7 +189,7 @@ def is_within_auto_fill_grace_shield(
 ) -> bool:
     """
     🚨 Case 61 & Case 69 [양방향 15.0초 잔고 인덱싱 시차 보호 그레이스 쉴드]:
-    최근 15.0초(AUTO_FILL_GRACE_SHIELD_SEC) 이내에 자동 매수 체결 또는 자동 매도 체결(개별 층 익절 / 0주 졸업)
+    최근 15.0초(AUTO_FILL_GRACE_SHIELD_SEC) 이내에 자동 매수 체결 또는 자동 매도 체결(개별 층 익절 / 골든포켓 익절 / 0주 졸업)
     이력이 존재하면 True 를 반환하여, defense_plugin.py 의 reconcile 모듈이 잔고 API 인덱싱 시차로 인해
     유령 추매(h_qty > ledger_qty)나 유령 부분매도(h_qty < ledger_qty) 또는 백업 덮어쓰기를 수행하는 것을 100% 차단한다!
     """
@@ -461,7 +485,7 @@ async def _fetch_fresh_current_soxl_price(
     fallback_price: float = 0.0,
 ) -> float:
     """
-    🚨 Case 65 & Case 73:
+    🚨 Case 65, Case 73 & Case 80:
     60초 타임쉴드가 경과한 뒤 매수 조건 판정 및 지정가 주문 발주 직전에
     토스 Open API(/api/v1/prices)를 직접 호출하여 가장 최신의 실시간 현재가를 조회한다.
     """
@@ -484,7 +508,7 @@ async def _fetch_fresh_current_soxl_price(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 0-B · Case 77] GUARD30 자투리 차단 · 토스 계좌 여유자금 감지 자동 수혈 · 단 1회 입금 요청 알림 실행기
+# [핵심 0-B · Case 77 & Case 80] GUARD30 자투리 차단 · 예수금 API 일시 오류 방어 · 토스 계좌 여유자금 감지 자동 수혈 · 단 1회 입금 요청 알림 실행기
 # ---------------------------------------------------------------------------
 async def _check_and_execute_guard30_or_reserve_injection(
     context: Any,
@@ -497,32 +521,79 @@ async def _check_and_execute_guard30_or_reserve_injection(
     trigger_desc: str,
 ) -> Tuple[bool, float, float, Dict[str, Any]]:
     """
-    🚨 [Case 77 : 💉 05_RESV_6P_GUARD30 실행 엔진]:
+    🚨 [Case 77 & Case 80 : 💉 05_RESV_6P_GUARD30 실행 엔진]:
     매수 주문 발주 직전(뮤텍스 내부)에 호출되어:
-    1) 토스 실계좌 주문가능 달러(`raw_bp_usd = await context.api.get_buying_power_usd(safety_buffer_pct=0.0)`)를 조회한다.
+    0) [Case 80 골든포켓 일시 가동 중 오발동 방어]:
+       만약 현재 독립 골든포켓(golden_pocket.qty > 0)에 가용 현금 100%가 일시 투입되어 있어
+       now_free_cash 가 부족한 상태라면, 이는 시드 고갈이 아니라 골든포켓(+1.50% 익절 대기) 가동 상태이므로
+       예비시드 수혈이나 입금 요청 알림을 발송하지 않고 조용히 대기(HOLD_CASH_DEPLOYED_IN_GOLDEN_POCKET)한다!
+    1) 토스 실계좌 주문가능 달러(`raw_bp_usd = await context.api.get_buying_power_usd(safety_buffer_pct=0.0)`)를 조회하되,
+       원장 가용현금이 충분함에도(`now_free_cash >= est_min_req`) 일시 네트워크 타임아웃으로 `0.0` 이 반환되면
+       `0.25초` 후 1회 재시도하고, 여전히 `0.0` 이면 허위 시드고갈 알림 발송이나 영구 래치 잠금 없이
+       해당 틱만 조용히 보류(`HOLD_TRANSIENT_BP_API_ERROR`)한다!
     2) `evaluate_guard30_and_reserve_injection()` 으로 30% 자투리 가드(`min_req_cash`) 통과 여부 및
        토스 계좌 미할당 여유 입금액(`raw_bp_usd - free_cash_usd`) 기반 예비시드 수혈 가능 여부를 판정한다.
-    3) [PROCEED_NORMAL]:
-       가용현금과 실계좌 예수금이 충분하면 기존의 입금 대기 상태(`waiting_reserve_deposit`, `waiting_reserve_deposit_alert_sent`)가
-       켜져 있었을 경우 즉시 해제하고 `(True, now_free_cash, eff_bp_for_order, guard_eval)` 를 반환한다.
-    4) [INJECT_AND_PROCEED]:
-       `free_cash_usd < min_req_cash` 인 상태에서 사용자가 토스 계좌에 `1회분 이상` 여유자금을 입금해 두었고
-       예비 한도(`6회분`)가 남아 있으면, 필요한 회분(`inject_portions`)과 금액(`inject_usd`)을 원장에 즉시 자동 수혈하고
-       `waiting_reserve_deposit = False`, `waiting_reserve_deposit_alert_sent = False` 로 리셋한 뒤,
-       텔레그램 수혈 완료 알림 발송과 동시에 `(True, updated_free_cash, eff_bp_for_order, guard_eval)` 를 반환하여
-       지체 없이 정량 매수를 집행한다!
-    5) [BLOCK_AND_ALERT_DEPOSIT]:
-       계좌에 아직 여유자금이 입금되지 않았거나 6회분 한도를 모두 소진한 경우:
-       - 자투리 1주 매수를 즉시 차단(`dust_guard_blocked_cnt += 1`)하고 60초 입금 감지 타임쉴드를 장전한다.
-       - 🚨 **스팸 메시지 폭탄 원천 차단**: 원장의 `waiting_reserve_deposit_alert_sent == False` 일 때만
-         **단 1회** `🚨 [💉 시드고갈 감지 · 예비시드 입금 요청]` 알림을 발송하고 즉시 `waiting_reserve_deposit_alert_sent = True` 로 잠근다!
-       - `(False, now_free_cash, eff_bp_for_order, guard_eval)` 를 반환하여 자투리 주문을 원천 차단한다.
+    3) [PROCEED_NORMAL] / [INJECT_AND_PROCEED] / [BLOCK_AND_ALERT_DEPOSIT] 분기 처리.
     """
     now_free_cash = max(0.0, safe_float(st_now.get("free_cash_usd"), 0.0))
     cur_used_res = max(0, safe_int(st_now.get("used_reserve_portions_cnt"), 0))
     cur_inj_usd = max(0.0, safe_float(st_now.get("injected_reserve_usd"), 0.0))
 
+    # [Case 80]: 독립 골든포켓(golden_pocket)이 보유 중이어서 현금이 골든포켓에 가동 중일 때
+    # 일반 그리드 매수 시도로 인해 시드고갈 알림이나 예비시드 수혈이 오발동하는 현상을 100% 원천 차단!
+    gp_now = pocket_from_dict(st_now.get("golden_pocket"))
+    fee_mult = 1.0 + (ROUND_TRIP_FEE_RATE_PCT / 100.0)
+    est_min_req = max(
+        exec_order_p * fee_mult,
+        portion_budget * MIN_DIP_BUDGET_RATIO,
+        (l1_actual_cost_usd * MIN_DIP_VS_L1_RATIO if is_dip_promotion else 0.0),
+    )
+    if gp_now.is_active and now_free_cash < est_min_req:
+        if is_vacant_l1_reentry:
+            re_epoch = mark_reentry_monitor_60s_cycle_shield(
+                context=context, symbol=TARGET_SYMBOL, eval_price=exec_order_p
+            )
+            await context.ledger.update_state(
+                TARGET_SYMBOL, last_reentry_eval_ts=re_epoch
+            )
+        return (
+            False,
+            now_free_cash,
+            0.0,
+            {
+                "action": "HOLD_CASH_DEPLOYED_IN_GOLDEN_POCKET",
+                "should_proceed": False,
+                "golden_pocket_qty": gp_now.qty,
+                "golden_pocket_cost_usd": gp_now.actual_cost_usd,
+            },
+        )
+
     raw_bp_usd = await context.api.get_buying_power_usd(safety_buffer_pct=0.0)
+    # MODIFIED [Case 77 예수금 API 일시 오류(0.0 반환) 시 허위 시드고갈 알림 원천 차단]:
+    # 원장 가용현금이 충분한데(now_free_cash >= est_min_req) 브로커 API가 0.0을 반환했다면 0.25초 후 1회 재시도한다.
+    if raw_bp_usd <= 0.0 and now_free_cash >= est_min_req:
+        await asyncio.sleep(0.25)
+        raw_bp_usd = await context.api.get_buying_power_usd(
+            safety_buffer_pct=0.0
+        )
+        if raw_bp_usd <= 0.0:
+            logger.debug(
+                "🛡️ [Case 77 예수금 API 일시 조회 지연 방어] 원장 가용현금($%.2f >= 최소 $%.2f) 정상이나 예수금 API가 0.0을 반환하여 허위 시드고갈 알림 없이 다음 루프 재시도",
+                now_free_cash,
+                est_min_req,
+            )
+            return (
+                False,
+                now_free_cash,
+                0.0,
+                {
+                    "action": "HOLD_TRANSIENT_BP_API_ERROR",
+                    "should_proceed": False,
+                    "free_cash_usd": now_free_cash,
+                    "min_req_cash": round(est_min_req, 4),
+                },
+            )
+
     eff_bp_for_eval: Optional[float] = (
         raw_bp_usd if raw_bp_usd > 0.0 else 0.0
     )
@@ -699,7 +770,7 @@ def min_req_cash_str(val: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 1] 매수 체결(FILLED) 커밋 · 비례 자투리 정산(Case 78) · 1~7층 순수 그리드 배치 · 기억저가 잠금/스텝업 갱신 · 매수 후 60초 타임쉴드 각인 (Case 69 ~ 78)
+# [핵심 1] 매수 체결(FILLED) 커밋 · 비례 자투리 정산(Case 78) · 독립 골든포켓/1~7층 순수 그리드 배치(Case 80) · 매수 후 60초 타임쉴드 각인
 # ---------------------------------------------------------------------------
 async def _commit_filled_buy_to_stratum_ledger(
     context: Any,
@@ -711,37 +782,22 @@ async def _commit_filled_buy_to_stratum_ledger(
     ordered_qty: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    🎯 1, 🎯 3, 🎯 4 & Case 25, 46, 53, 59, 60, 61, 65, 67, 69, 71, 72, 73, 74, 76, 77, 78:
+    🎯 1, 🎯 3, 🎯 4 & Case 25, 46, 53, 59, 60, 61, 65, 67, 69, 71, 72, 73, 74, 76, 77, 78, 80:
     매수 주문 체결(FILLED 또는 부분 체결 후 60초 타임아웃 종료)이 확인된 즉시:
-    1) 🚨 [NEW · Case 78 부분 체결 시 체결 수량 비례 예산 자투리 정산]:
-       - 전량 체결(q_int >= ord_q)일 때는 eff_portion_budget = raw_portion_budget 으로 산출하되,
-       - 지정가 호가 물량 부족으로 부분 체결(q_int < ord_q, 예: 17주 발주 중 2주만 체결)된 경우에는
-         미체결된 15주 분량의 예산(+$1,358.28)이 자투리 절약금으로 허위 산입되지 않도록 반드시
-         체결 수량 비례 예산 `eff_portion_budget = round(raw_portion_budget * (float(q_int) / float(ord_q)), 4)`
-         대비 절약액(`saved_from_portion = max(0.0, eff_portion_budget - actual_spent)`)만 자투리 절약금으로 정산한다!
-    2) vrev_add_quota_lot_and_merge_2tier() 를 호출하여:
-       - 상단 그리드(2층 ~ 7층)만 보유 중(1층 공석) REENTRY_1FL 체결 시에는 상단 지층을 병합하지 않고
-         [new_l1(REENTRY_1FL), GRID_L2, ..., GRID_Lk] 로 독립 배치(Case 59, Case 71 ~ 73)하고,
-       - 활성 1층 부분 체결 잔량 보충(TOPUP_1FL) 체결 시에는 지층 승격(GRID_L2) 및 회차(lot_count) 증가 없이
-         기존 1층에 수량과 순수 원금을 그대로 가중평균 합산(Case 78)하며,
-       - 활성 1층 보유 중 4단 와이드 신저가 추매 또는 STEP2X_15PCT_C20 스텝업 추매(DIP_1FL / QUOTA_L1) 체결 시에는
-         신규 매수분을 1층에 두고 기존 지층들을 2층 ~ 6층(GRID_L2 ~ GRID_L6) 개별 완충층으로 한 칸씩 승격
-         (7층 초과 시 최상단 6층+7층만 통합 7층 GRID_L7 합병)한다.
-    3) 🚨 [NEW · Case 78 1층 목표 정량(l1_target_quota_qty) 보존]:
-       - 최초 매수 발주 시 기록된 목표 정량(l1_target_quota_qty, 예: 17주)을 그대로 보존하여,
-         부분 체결(2주) 후 미체결 잔량(`rem_after_fill = max(0, next_l1_target_q - new_buckets[0].qty) = 15주`)이
-         60초 타임쉴드 경과 후 1.5초 실시간 모니터에서 즉시 감시·재발주되도록 보장한다!
-    4) 🚨 Case 60, Case 72 & Case 76:
-       - 0주에서 첫 진입(was_empty)이면 cycle_min_buy_price = fill_p 로 각인한다.
-       - STEP2X_15PCT_C20 스텝업 해금 추매(pending_step_up_min_price > 0.0 & tag not in ("REENTRY_1FL", "TOPUP_1FL"))가 체결된 경우
-         cycle_min_buy_price = round(min(pending_step_up_min_price, fill_p), 4) 로 잠금 최저가를 스텝업 갱신한다!
-       - 그 외 일반 매수에서는 min(old_min_p, fill_p) 로 정적 잠금을 유지한다.
-    5) 🚨 봇 자동 매수 주문 ID(settled_order_id)를 last_settled_order_ids 에 등록하고
-       mark_auto_fill_grace_shield() 및 원장 last_buy_fill_ts / entry_ts 를 각인하여,
-       매수 체결 직후 15.0초 잔고 인덱싱 보호 및 60.0초 동안 매도/중복매수 차단 타임쉴드를 가동한다!
+    0) 🚨 [Case 80 : POCKET_ALLIN 모드 독립 골든포켓(lot_type == "GOLDEN_POCKET") 체결 분리 정산]:
+       - 기존 1층 ~ 7층 그리드(old_buckets), anchor_price, cycle_min_buy_price, l1_target_quota_qty 를
+         전혀 변경하거나 승격시키지 않고 원장의 golden_pocket 에 순수 원가로 독립 기록한다!
+       - 자투리 절약금은 0.0 으로 처리하여 허위 자투리 누적을 방지하고,
+         매수 후 60.0초 타임쉴드 및 15.0초 인덱싱 그레이스 쉴드를 각인한 뒤 +1.50% 독립 익절 타점을 감시한다.
+    1) 🚨 [Case 78 부분 체결 시 체결 수량 비례 예산 자투리 정산 (GOLDEN_L1 전액매수는 자투리 0.0 처리)]:
+       - 일반 8% 정량 매수 시 전량 체결이면 eff_portion_budget = raw_portion_budget 으로 산출하고,
+         부분 체결(q_int < ord_q)이면 체결 수량 비례 예산 대비 절약액만 자투리로 정산한다.
+    2) vrev_add_quota_lot_and_merge_2tier() 를 호출하여 1~7층 그리드 배치/승격/합산을 수행한다.
     """
     st = context.ledger.get_state(TARGET_SYMBOL)
     old_buckets = buckets_from_dicts(st.get("buckets", []))
+    old_gp = pocket_from_dict(st.get("golden_pocket"))
+    today_est_str = datetime.now(EST_TZ).strftime("%Y-%m-%d")
 
     q_int = max(1, safe_int(filled_qty, 1))
     ord_q = max(
@@ -763,18 +819,125 @@ async def _commit_filled_buy_to_stratum_ledger(
         settled_oids.append(eff_oid)
     settled_oids = settled_oids[-50:]
 
-    # 🚨 [NEW · Case 78 : 부분 체결(q_int < ord_q) 시 체결 수량 비례 예산으로만 자투리 절약금 정산]
+    now_buy_epoch = time.time()
+
+    # -----------------------------------------------------------------------
+    # [Case 80 분기 : 독립 골든포켓(lot_type == "GOLDEN_POCKET") 체결 커밋]
+    # -> 기존 1~7층 그리드(old_buckets) 및 기억저가를 전혀 건드리지 않고 golden_pocket 에만 독립 기록!
+    # -----------------------------------------------------------------------
+    if tag == "GOLDEN_POCKET":
+        if old_gp.is_active:
+            comb_gp_q = old_gp.qty + q_int
+            comb_gp_cost = round(old_gp.actual_cost_usd + actual_spent, 4)
+            comb_gp_p = round(comb_gp_cost / float(comb_gp_q), 4)
+            new_gp = GoldenAllInPocket(
+                qty=comb_gp_q,
+                book_price=comb_gp_p,
+                book_invested_usd=comb_gp_cost,
+                actual_cost_usd=comb_gp_cost,
+                entry_ts=now_buy_epoch,
+                order_date=today_est_str,
+            )
+        else:
+            new_gp = GoldenAllInPocket(
+                qty=q_int,
+                book_price=fill_p,
+                book_invested_usd=actual_spent,
+                actual_cost_usd=actual_spent,
+                entry_ts=now_buy_epoch,
+                order_date=today_est_str,
+            )
+
+        tot_buy_ev = safe_int(st.get("total_buy_events"), 0) + 1
+        tot_buy_sh = safe_int(st.get("total_buy_shares"), 0) + q_int
+        day_buy_ev = safe_int(st.get("daily_buy_events"), 0) + 1
+        g_buy_ev = safe_int(st.get("golden_allin_buy_events"), 0) + 1
+        day_g_buy_ev = safe_int(st.get("daily_golden_allin_buy_events"), 0) + 1
+
+        mark_auto_fill_grace_shield(
+            context=context,
+            symbol=TARGET_SYMBOL,
+            lot_type="GOLDEN_POCKET",
+            fill_price=fill_p,
+            filled_qty=q_int,
+        )
+        mark_reserve_deposit_check_shield(
+            context=context,
+            symbol=TARGET_SYMBOL,
+            clear_shield=True,
+        )
+
+        updated_st = await context.ledger.update_state(
+            TARGET_SYMBOL,
+            golden_pocket=new_gp.to_dict(),
+            last_golden_allin_date=today_est_str,
+            buy_order_id="",
+            ordered_qty=0,
+            buy_price=0.0,
+            pending_portion_budget=0.0,
+            pending_lot_type="",
+            pending_step_up_min_price=0.0,
+            waiting_reserve_deposit=False,
+            waiting_reserve_deposit_alert_sent=False,
+            required_reserve_deposit_usd=0.0,
+            last_reserve_check_ts=0.0,
+            last_settled_order_ids=settled_oids,
+            total_buy_events=tot_buy_ev,
+            total_buy_shares=tot_buy_sh,
+            daily_buy_events=day_buy_ev,
+            golden_allin_buy_events=g_buy_ev,
+            daily_golden_allin_buy_events=day_g_buy_ev,
+            last_buy_fill_ts=now_buy_epoch,
+        )
+        context.wakeup_event.set()
+        free_cash_now = safe_float(updated_st.get("free_cash_usd"), 0.0)
+        gp_target_p = new_gp.target_sell_price(rise_pct=GOLDEN_POCKET_RISE_PCT)
+        grid_sh = sum(b.qty for b in old_buckets)
+
+        if hasattr(context, "send_slim_alert"):
+            await context.send_slim_alert(
+                title=(
+                    f"🌟 [SOXL 황금시간 독립 골든포켓 100% 전액매수 체결] "
+                    f"{q_int}주 @ ${fill_p:.2f}"
+                ),
+                body=(
+                    f"실사용 ${actual_spent:,.2f} · "
+                    f"🛡️60초 타임쉴드 후 골든포켓 단독 익절목표 ${gp_target_p:.2f}(+1.5%) ⚡1.5초 실시간 감시! · "
+                    f"기존 그리드({len(old_buckets)}개층·{grid_sh}주) 원가·회차·기억저가 100% 비오염 보존 · "
+                    f"잔여 가용현금 ${free_cash_now:,.2f}"
+                ),
+            )
+        return {
+            "status": "GOLDEN_POCKET_FILLED",
+            "symbol": TARGET_SYMBOL,
+            "lot_type": "GOLDEN_POCKET",
+            "filled_qty": q_int,
+            "ordered_qty": ord_q,
+            "fill_price": fill_p,
+            "actual_spent_usd": actual_spent,
+            "golden_pocket_target_price": gp_target_p,
+            "free_cash_usd": free_cash_now,
+        }
+
+    # -----------------------------------------------------------------------
+    # [일반 8% 정량 매수(REENTRY_1FL / TOPUP_1FL / DIP_1FL) 및 GRID_L1_ALLIN(GOLDEN_L1) 커밋]
+    # -----------------------------------------------------------------------
     raw_portion_budget = safe_float(portion_budget, 0.0)
-    if raw_portion_budget <= 0.0:
+    if tag == "GOLDEN_L1" or raw_portion_budget <= 0.0:
         eff_portion_budget = actual_spent
+        saved_from_portion = 0.0
     elif q_int < ord_q and ord_q > 0:
         eff_portion_budget = round(
             raw_portion_budget * (float(q_int) / float(ord_q)), 4
         )
+        saved_from_portion = round(
+            max(0.0, eff_portion_budget - actual_spent), 4
+        )
     else:
         eff_portion_budget = raw_portion_budget
-
-    saved_from_portion = round(max(0.0, eff_portion_budget - actual_spent), 4)
+        saved_from_portion = round(
+            max(0.0, eff_portion_budget - actual_spent), 4
+        )
 
     was_empty = len(old_buckets) == 0
     was_l2_only = bool(
@@ -795,10 +958,13 @@ async def _commit_filled_buy_to_stratum_ledger(
         max_tiers=MAX_GRID_TIERS_7,
     )
 
-    # 🚨 [NEW · Case 78 : 1층 목표 정량(l1_target_quota_qty) 보존 및 미체결 잔량(rem_after_fill) 산출]
+    # 🚨 [Case 78 & Case 80 : 1층 목표 정량(l1_target_quota_qty) 보존 및 미체결 잔량 산출]
+    # GOLDEN_L1 은 가용현금 100% 전액 주문이므로 부분 체결 시에도 잔량 추격(TOPUP_1FL) 없이 기체결 수량을 목표 정량으로 확정한다.
     raw_target_q = max(0, safe_int(st.get("l1_target_quota_qty"), 0))
     cur_l1_qty = new_buckets[0].qty if new_buckets else q_int
-    if tag == "TOPUP_1FL":
+    if tag == "GOLDEN_L1":
+        next_l1_target_q = cur_l1_qty
+    elif tag == "TOPUP_1FL":
         next_l1_target_q = max(cur_l1_qty, raw_target_q)
     else:
         next_l1_target_q = max(
@@ -813,7 +979,11 @@ async def _commit_filled_buy_to_stratum_ledger(
 
     if was_empty or old_min_p <= 0.0:
         new_cycle_min_p = fill_p
-    elif pending_step_up_p > 0.0 and tag not in ("REENTRY_1FL", "TOPUP_1FL"):
+    elif pending_step_up_p > 0.0 and tag not in (
+        "REENTRY_1FL",
+        "TOPUP_1FL",
+        "GOLDEN_L1",
+    ):
         new_cycle_min_p = round(min(pending_step_up_p, fill_p), 4)
         is_step_up_unlock_fill = True
     else:
@@ -829,6 +999,14 @@ async def _commit_filled_buy_to_stratum_ledger(
     unlock_inc = 1 if is_step_up_unlock_fill else 0
     cond_unlock_ev = safe_int(st.get("cond_unlock_buy_events"), 0) + unlock_inc
     day_unlock_ev = safe_int(st.get("daily_unlock_buy_events"), 0) + unlock_inc
+    g_inc = 1 if tag == "GOLDEN_L1" else 0
+    g_buy_ev = safe_int(st.get("golden_allin_buy_events"), 0) + g_inc
+    day_g_buy_ev = safe_int(st.get("daily_golden_allin_buy_events"), 0) + g_inc
+    last_g_date = (
+        today_est_str
+        if tag == "GOLDEN_L1"
+        else str(st.get("last_golden_allin_date") or "")
+    )
     extra_13 = safe_int(st.get("extra_13plus_buy_events"), 0) + (
         1
         if (tag != "TOPUP_1FL" and new_held_lots > BASE_MAX_LOTS_8PCT)
@@ -845,7 +1023,6 @@ async def _commit_filled_buy_to_stratum_ledger(
         4,
     )
 
-    now_buy_epoch = time.time()
     mark_auto_fill_grace_shield(
         context=context,
         symbol=TARGET_SYMBOL,
@@ -873,6 +1050,7 @@ async def _commit_filled_buy_to_stratum_ledger(
         ratchet_anchor_price=new_buckets[0].book_price if new_buckets else fill_p,
         cycle_reanchor_credit_usd=0.0,
         l1_target_quota_qty=next_l1_target_q,
+        last_golden_allin_date=last_g_date,
         buy_order_id="",
         ordered_qty=0,
         buy_price=0.0,
@@ -889,6 +1067,8 @@ async def _commit_filled_buy_to_stratum_ledger(
         daily_buy_events=day_buy_ev,
         cond_unlock_buy_events=cond_unlock_ev,
         daily_unlock_buy_events=day_unlock_ev,
+        golden_allin_buy_events=g_buy_ev,
+        daily_golden_allin_buy_events=day_g_buy_ev,
         extra_13plus_buy_events=extra_13,
         cumulative_leftover_saved_usd=cum_saved,
         daily_leftover_saved_usd=day_saved,
@@ -916,7 +1096,22 @@ async def _commit_filled_buy_to_stratum_ledger(
             if rem_after_fill > 0
             else ""
         )
-        if tag == "TOPUP_1FL":
+        if tag == "GOLDEN_L1":
+            upper_note = (
+                f" · 2~{new_held_tiers}층({u_cnt}개층·{u_qty}주) 순수이평 ${u_wma_p:.2f}(목표 ${u_wma_t:.2f})"
+                if len(new_buckets) >= 2
+                else ""
+            )
+            title_str = (
+                f"🔥 [SOXL 황금시간 7층그리드 1층 100% 전액편입 체결] "
+                f"{q_int}주 @ ${fill_p:.2f} ({new_held_tiers}개층)"
+            )
+            body_str = (
+                f"실사용 ${actual_spent:,.2f} · "
+                f"🛡️60초 타임쉴드 후 1층목표 ${l1_target:.2f}(+1.5%) 감시{upper_note} · "
+                f"기억저가 ${new_cycle_min_p:.2f} · 가용현금 ${free_cash_now:,.2f} (총 {new_held_shares}주)"
+            )
+        elif tag == "TOPUP_1FL":
             done_badge = (
                 f"정량 {next_l1_target_q}주 완수!"
                 if rem_after_fill == 0
@@ -1000,19 +1195,14 @@ async def sync_pending_buy_order_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    🎯 1 & 🎯 5 & Case 19, 24, 59, 60, 61, 65, 71, 72, 73, 76, 77, 78:
+    🎯 1 & 🎯 5 & Case 19, 24, 59, 60, 61, 65, 71, 72, 73, 76, 77, 78, 80:
     장부에 대기 중인 미체결 매수 주문(buy_order_id)이 존재할 때:
     1) GET /api/v1/orders/{orderId} 로 실제 체결 상태(FILLED / PARTIAL_FILLED / PENDING / CANCELED)를 조회한다.
     2) FILLED(또는 부분 체결 후 취소 종료) 확인 즉시 실제 평균 체결가(execution.averageFilledPrice)와
-       체결 수량(filledQuantity), 원주문 수량(ordered_qty)을 _commit_filled_buy_to_stratum_ledger() 에 전달하여
-       체결 수량 비례 자투리 정산, 1~7층 멀티 그리드 배치/승격(또는 TOPUP_1FL 기존 1층 합산),
-       l1_target_quota_qty 보존 및 매수 후 60초 타임쉴드 각인을 완료한다.
-    3) 🚨 [Case 65, Case 73, Case 76 & Case 78]: 현재가 지정가로 발주된 매수 주문이 60.0초(BUY_ORDER_MAX_WAIT_SEC) 동안
-       전량 체결되지 않으면 미체결 주문을 안전하게 취소(cancel_order)하되:
-       - 부분 체결된 물량(f_qty > 0)이 있으면 즉시 _commit_filled_buy_to_stratum_ledger() 로 기체결분만 1층에 반영하고
-         미체결 잔량(l1_target_quota_qty - cur_l1_qty)은 60초 타임쉴드 후 1.5초 모니터가 이어받아 재발주하도록 보존한다!
-       - 단 1주도 체결되지 않은(f_qty == 0) 경우: TOPUP_1FL 주문이었으면 기존 l1_target_quota_qty 를 그대로 유지하여
-         다음 1.5초 루프에서 해당 단가 도래 시 다시 잔량 대기를 수행하도록 보장한다!
+       체결 수량(filledQuantity), 원주문 수량(ordered_qty)을 _commit_filled_buy_to_stratum_ledger() 에 전달한다.
+    3) 단 1주도 체결되지 않고(filled_q == 0) 취소/거부된 경우:
+       - GOLDEN_POCKET / GOLDEN_L1 주문이었으면 last_golden_allin_date 를 "" 로 원복하여
+         07:00 ~ 07:50 EST 시간창 내 재타격 기회를 보존한다(Case 80).
     """
     st = context.ledger.get_state(TARGET_SYMBOL)
     buy_oid = str(st.get("buy_order_id") or "").strip()
@@ -1031,9 +1221,10 @@ async def sync_pending_buy_order_plugin(
     cur_target_q = max(0, safe_int(st.get("l1_target_quota_qty"), 0))
     fallback_target_q_on_zero_cancel = (
         cur_target_q
-        if (lot_type == "TOPUP_1FL" and has_active_l1_now)
+        if (lot_type in ("TOPUP_1FL", "GOLDEN_POCKET") and has_active_l1_now)
         else (buckets_now[0].qty if has_active_l1_now else 0)
     )
+    is_golden_lot = lot_type in ("GOLDEN_POCKET", "GOLDEN_L1")
 
     detail = await context.api.get_order_detail(buy_oid)
     if isinstance(detail, dict):
@@ -1103,29 +1294,31 @@ async def sync_pending_buy_order_plugin(
                 "ordered_qty": ordered_qty,
             }
 
-        # 3) 미체결 상태로 취소/거부된 경우 장부 락 해제 및 pending_step_up_min_price / l1_target_quota_qty 원복
+        # 3) 미체결 상태로 취소/거부된 경우 장부 락 해제
         if ord_status in ("CANCELED", "REJECTED") and filled_q == 0:
             re_epoch = (
                 mark_reentry_monitor_60s_cycle_shield(
                     context=context, symbol=TARGET_SYMBOL, eval_price=ord_price
                 )
-                if is_vacant_l1_now
-                else 0.0
+                if (is_vacant_l1_now and not is_golden_lot)
+                else safe_float(st.get("last_reentry_eval_ts"), 0.0)
             )
-            await context.ledger.update_state(
-                TARGET_SYMBOL,
-                l1_target_quota_qty=fallback_target_q_on_zero_cancel,
-                buy_order_id="",
-                ordered_qty=0,
-                buy_price=0.0,
-                pending_portion_budget=0.0,
-                pending_lot_type="",
-                pending_step_up_min_price=0.0,
-                last_reentry_eval_ts=re_epoch,
-            )
+            clear_kw: Dict[str, Any] = {
+                "l1_target_quota_qty": fallback_target_q_on_zero_cancel,
+                "buy_order_id": "",
+                "ordered_qty": 0,
+                "buy_price": 0.0,
+                "pending_portion_budget": 0.0,
+                "pending_lot_type": "",
+                "pending_step_up_min_price": 0.0,
+                "last_reentry_eval_ts": re_epoch,
+            }
+            if is_golden_lot:
+                clear_kw["last_golden_allin_date"] = ""
+            await context.ledger.update_state(TARGET_SYMBOL, **clear_kw)
             return {"status": f"BUY_ORDER_{ord_status}_CLEARED"}
 
-    # 🚨 4) [Case 65, Case 73, Case 76 & Case 78] 매도 1호가(Ask 1) 상향 추격 정정 완전 소각! (60초 대기 후 안전 취소)
+    # 🚨 4) [Case 65, Case 73, Case 76, Case 78 & Case 80] 매도 1호가(Ask 1) 상향 추격 정정 완전 소각! (60초 대기 후 안전 취소)
     last_mod = safe_float(st.get("last_modify_mono"), 0.0)
     elapsed_mod = time.monotonic() - last_mod if last_mod > 0.0 else 0.0
     if elapsed_mod >= BUY_ORDER_MAX_WAIT_SEC:
@@ -1159,20 +1352,22 @@ async def sync_pending_buy_order_plugin(
             mark_reentry_monitor_60s_cycle_shield(
                 context=context, symbol=TARGET_SYMBOL, eval_price=ord_price
             )
-            if is_vacant_l1_now
-            else 0.0
+            if (is_vacant_l1_now and not is_golden_lot)
+            else safe_float(st.get("last_reentry_eval_ts"), 0.0)
         )
-        await context.ledger.update_state(
-            TARGET_SYMBOL,
-            l1_target_quota_qty=fallback_target_q_on_zero_cancel,
-            buy_order_id="",
-            ordered_qty=0,
-            buy_price=0.0,
-            pending_portion_budget=0.0,
-            pending_lot_type="",
-            pending_step_up_min_price=0.0,
-            last_reentry_eval_ts=re_epoch,
-        )
+        timeout_kw: Dict[str, Any] = {
+            "l1_target_quota_qty": fallback_target_q_on_zero_cancel,
+            "buy_order_id": "",
+            "ordered_qty": 0,
+            "buy_price": 0.0,
+            "pending_portion_budget": 0.0,
+            "pending_lot_type": "",
+            "pending_step_up_min_price": 0.0,
+            "last_reentry_eval_ts": re_epoch,
+        }
+        if is_golden_lot:
+            timeout_kw["last_golden_allin_date"] = ""
+        await context.ledger.update_state(TARGET_SYMBOL, **timeout_kw)
         logger.info(
             "⏳ [SOXL 현재가 지정가 매수(%s) 60초 미체결 안전 취소] 지정가 $%.2f 유지 종료 ➔ 관망 복귀",
             lot_type,
@@ -1184,8 +1379,9 @@ async def sync_pending_buy_order_plugin(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] 진화 챔피언 (💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20) : 비대칭 매수 타격 엔진
-#  - 분기 A   : 0주 상태 -> 0주 종료 후 60초 타임쉴드 경과 뒤 현재가 지정가 첫 1층(REENTRY_1FL) 산입
+# [핵심 2] 진화 챔피언 (🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20) : 비대칭 매수 타격 엔진
+#  - 분기 G   : 07:00 ~ 07:50 EST & RSI(14) <= 19.0 황금시간 가용시드 100% 전액 추가매수 (제어반 ON 시 · Case 80)
+#  - 분기 A   : 그리드 0주 상태 -> 0주 종료 후 60초 타임쉴드 경과 뒤 현재가 지정가 첫 1층(REENTRY_1FL) 산입
 #  - 분기 B-0 : 활성 1층 부분체결 미체결 잔량(rem_quota_qty > 0) -> 60초 타임쉴드 후 매 1.5초 모니터에서 현재가 <= 1층 단가 도래 시 잔량(TOPUP_1FL) 지정가 60초 재대기(Case 78)
 #  - 분기 B-1 : 상단 2~7층 보유 중 1층 공석 -> 매 60.0초(1분) 타임쉴드 주기 재장전 모니터 & 2층 단가 상한(Case 73) & GUARD30/예비수혈(Case 77)
 #  - 분기 B-2 : 활성 1층 보유 중 -> 10분 고정 게이트 & 정적 기억저가 4단 와이드 신저가 OR STEP2X_15PCT_C20 스텝업 추매(Case 76) & GUARD30/예비수혈(Case 77)
@@ -1197,29 +1393,12 @@ async def execute_seed_protected_buy_gate_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    🎯 1, 🎯 2, 🎯 4 & Case 25 ~ 78 (챔피언 : 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20):
-    04:07:00 ~ 16:00:00 EST 운용 구간에서:
-    1) 미체결 매수/매도 주문이 대기 중이면 중복 매수 발사를 차단한다.
-    2) 🛡️ [Case 65 : 매도(부분 익절 및 0주 싸이클 종료) 후 60.0초 타임쉴드 & 직전 매수 후 60.0초 타임쉴드 강제 검문]
-       - 타임쉴드 중에는 10분 버킷(last_evaluated_buy_bucket_id)을 소모하지 않고 대기한다.
-    3) 🛡️ [Case 77 : 시드고갈 입금 대기(waiting_reserve_deposit == True) 중 60.0초 주기 입금 감시 타임쉴드 검문]
-       - 시드고갈로 입금 대기 중일 때는 60.0초마다 토스 실계좌 예수금을 확인하여 입금 즉시 수혈 매수를 집행한다.
-    4) 🔥 [분기 A : 보유 잔고 0주 상태 (is_zero_shares) — 0주 싸이클 종료 후 60초 타임쉴드 경과 뒤에 현재가 조회 및 첫 진입]
-    4-B) 🎯 [NEW · 분기 B-0 : 활성 1층 부분 체결 미체결 잔량 존재 (has_active_l1 and buckets[0].qty < l1_target_quota_qty · Case 78)]
-       - 매수 후 60.0초 타임쉴드가 경과한 시점부터 10분 게이트를 기다리지 않고 매 1.5초 실시간 모니터마다
-         현재가(live_p)를 대조하여 `live_p <= buckets[0].book_price` (해당 1층 매수 단가 이하 재도래) 조건이 충족되면
-         즉시 미체결 잔량(`rem_quota_qty = l1_target_quota_qty - buckets[0].qty`)을 `TOPUP_1FL` 지정가로 발주하고 60.0초간 대기한다!
-    5) ♻️ [분기 B-1 : 상단 그리드(2층 ~ 7층)만 보유 중 (1층 공석, is_l2_only_vacant_l1 · Case 59, 67, 71, 72, 73, 74, 77)]
-       - 매 60.0초(1분) 주기마다 실시간 현재가를 조회하되 현재가 <= 2층 단가 상한 가드(Case 73) 하에서
-         직전 익절가 대비 -1.00% 이하 눌림목 OR +1.00% 이상 상승돌파 시 GUARD30 및 온디맨드 예비수혈(Case 77)을 거쳐
-         상단 2층 ~ 7층 비병합 독립 1층(REENTRY_1FL) 지정가 주문을 즉시 발주한다!
-    6) 📐 [분기 B-2 : 활성 1층 보유 중 — 10분 고정 매수 게이트 & 정적 기억 최저가 4단 와이드 OR STEP2X_15PCT_C20 스텝업 추매 & GUARD30/예비수혈 (Case 60, 67, 71, 72, 74, 76, 77)]
-       - 04:07 EST 기점 10분 고정 매수 게이트 오픈 시(또는 시드고갈 입금 대기 상태에서 60초 주기 도래 시) 검문한다.
-       - 정적 4단 와이드 신저가 또는 STEP2X_15PCT_C20 3중 안전문 충족 시, GUARD30(30% 자투리 승격 방지 가드) 및
-         온디맨드 +6회분 예비시드 자동 수혈(Case 77)을 거쳐 DIP_1FL 추매 주문을 발주한다!
+    🎯 1, 🎯 2, 🎯 4 & Case 25 ~ 80 (챔피언 : 🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20):
+    04:07:00 ~ 16:00:00 EST 운용 구간에서 작동하는 비대칭 매수 타격 엔진.
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     hm = dt_now.hour * 100 + dt_now.minute
+    today_est_str = dt_now.strftime("%Y-%m-%d")
 
     # 1) 미체결 매수 주문이 있으면 먼저 체결 확인 수행
     st = context.ledger.get_state(TARGET_SYMBOL)
@@ -1232,7 +1411,7 @@ async def execute_seed_protected_buy_gate_plugin(
         )
 
     # 2) 04:07 ~ 16:00 EST 운용 시간대 및 마스터 전원(is_active) 확인
-    if not is_active_trading_window(hm):
+    if not is_active_buy_window(hm, now_est=dt_now):
         return {"status": "OUTSIDE_TRADING_WINDOW"}
 
     if not bool(st.get("is_active", True)):
@@ -1280,6 +1459,7 @@ async def execute_seed_protected_buy_gate_plugin(
         return {"status": "NO_LIVE_PRICE"}
 
     buckets = buckets_from_dicts(st.get("buckets", []))
+    gp = pocket_from_dict(st.get("golden_pocket"))
     h_qty = safe_int((holdings or {}).get(TARGET_SYMBOL, {}).get("qty"), 0)
 
     init_seed = max(
@@ -1292,8 +1472,10 @@ async def execute_seed_protected_buy_gate_plugin(
     )
     realized_equity = max(100.0, init_seed + cum_realized)
     free_cash = max(0.0, safe_float(st.get("free_cash_usd"), 0.0))
-    actual_invested = sum(b.actual_cost_usd for b in buckets)
-    # Case 77: 온디맨드 예비시드 수혈금(injected_reserve_usd)을 제외한 순수 코어 총자산(core_equity) 산출
+    actual_invested = sum(b.actual_cost_usd for b in buckets) + (
+        gp.actual_cost_usd if gp.is_active else 0.0
+    )
+    # Case 77 & Case 80: 온디맨드 예비시드 수혈금(injected_reserve_usd)을 제외한 순수 코어 총자산(core_equity) 산출
     core_equity = max(
         init_seed, (free_cash + actual_invested) - injected_reserve_usd
     )
@@ -1302,18 +1484,262 @@ async def execute_seed_protected_buy_gate_plugin(
     unlock_mode = str(
         st.get("unlock_mode") or DEFAULT_UNLOCK_MODE
     ).upper()
+    golden_allin_mode = (
+        str(st.get("golden_allin_mode") or DEFAULT_GOLDEN_ALLIN_MODE)
+        .upper()
+        .strip()
+    )
+    if golden_allin_mode not in GOLDEN_ALLIN_MODES:
+        golden_allin_mode = DEFAULT_GOLDEN_ALLIN_MODE
     buy_interval_min = LOCKED_BUY_INTERVAL_MIN
 
-    is_zero_shares = bool(len(buckets) == 0 and h_qty == 0)
+    # -----------------------------------------------------------------------
+    # [분기 G · Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용현금 100% 전액 추가매수]
+    # -> 전술 제어반에서 POCKET_ALLIN 또는 GRID_L1_ALLIN 이 선택된 경우에만 작동(기본값 "NONE" [OFF])!
+    # -----------------------------------------------------------------------
+    if golden_allin_mode != "NONE" and is_golden_allin_time_window(
+        hm, now_est=dt_now
+    ):
+        raw_cache = getattr(context, "candle_metrics_cache", {})
+        base_met = (
+            raw_cache.get(TARGET_SYMBOL)
+            if isinstance(raw_cache, dict)
+            else None
+        )
+        met = refresh_metrics_with_live_tick(base_met, live_p, now_est=dt_now)
+        rsi_val = safe_float(met.get("rsi_14"), 50.0)
+        # MODIFIED [Case 80]: 최소 14개 이상의 1분봉이 확보된 rsi_ready == True 만 엄격히 신뢰!
+        rsi_ready = bool(met.get("rsi_ready", False))
+
+        golden_sig = evaluate_golden_allin_signal(
+            hm=hm,
+            rsi_14=rsi_val,
+            live_price=live_p,
+            golden_allin_mode=golden_allin_mode,
+            today_str=today_est_str,
+            last_golden_allin_date=str(st.get("last_golden_allin_date") or ""),
+            golden_pocket=gp,
+            rsi_ready=rsi_ready,
+        )
+        if bool(golden_sig.get("should_buy")):
+            async with context.in_memory_ordering_lock:
+                async with context.dual_strike_mutex:
+                    st_now = context.ledger.get_state(TARGET_SYMBOL)
+                    if str(st_now.get("buy_order_id") or "").strip() or str(
+                        st_now.get("sell_order_id") or ""
+                    ).strip():
+                        return {"status": "ALREADY_ORDERING_IN_MUTEX"}
+
+                    in_s_sh, _ = is_within_post_sell_time_shield(
+                        context, st_now, TARGET_SYMBOL
+                    )
+                    in_b_sh, _ = is_within_post_buy_time_shield(
+                        context, st_now, TARGET_SYMBOL
+                    )
+                    if in_s_sh or in_b_sh:
+                        return {"status": "HOLD_60S_TIME_SHIELD_IN_MUTEX"}
+
+                    fresh_live_p = await _fetch_fresh_current_soxl_price(
+                        context, fallback_price=live_p
+                    )
+                    if fresh_live_p <= 0.0:
+                        return {"status": "NO_FRESH_LIVE_PRICE"}
+
+                    met_fresh = refresh_metrics_with_live_tick(
+                        base_met, fresh_live_p, now_est=dt_now
+                    )
+                    fresh_rsi = safe_float(met_fresh.get("rsi_14"), rsi_val)
+                    fresh_rsi_ready = bool(
+                        met_fresh.get("rsi_ready", rsi_ready)
+                    )
+                    now_gp = pocket_from_dict(st_now.get("golden_pocket"))
+                    now_g_mode = (
+                        str(
+                            st_now.get("golden_allin_mode")
+                            or DEFAULT_GOLDEN_ALLIN_MODE
+                        )
+                        .upper()
+                        .strip()
+                    )
+
+                    re_g_sig = evaluate_golden_allin_signal(
+                        hm=hm,
+                        rsi_14=fresh_rsi,
+                        live_price=fresh_live_p,
+                        golden_allin_mode=now_g_mode,
+                        today_str=today_est_str,
+                        last_golden_allin_date=str(
+                            st_now.get("last_golden_allin_date") or ""
+                        ),
+                        golden_pocket=now_gp,
+                        rsi_ready=fresh_rsi_ready,
+                    )
+                    if bool(re_g_sig.get("should_buy")):
+                        exec_order_p = max(
+                            0.01,
+                            math.floor((fresh_live_p + 1e-9) * 100.0) / 100.0,
+                        )
+                        now_buckets = buckets_from_dicts(
+                            st_now.get("buckets", [])
+                        )
+                        now_free_cash = max(
+                            0.0, safe_float(st_now.get("free_cash_usd"), 0.0)
+                        )
+                        now_init_seed = max(
+                            100.0,
+                            safe_float(
+                                st_now.get("initial_seed_usd"),
+                                DEFAULT_INITIAL_SEED_USD,
+                            ),
+                        )
+                        now_inj_res = max(
+                            0.0,
+                            safe_float(st_now.get("injected_reserve_usd"), 0.0),
+                        )
+                        now_inv_tot = sum(
+                            b.actual_cost_usd for b in now_buckets
+                        ) + (now_gp.actual_cost_usd if now_gp.is_active else 0.0)
+                        now_core_eq = max(
+                            now_init_seed,
+                            (now_free_cash + now_inv_tot) - now_inj_res,
+                        )
+                        _, portion_budget_g = compute_golden8_quota_qty(
+                            anchor_price=exec_order_p,
+                            current_total_equity=now_core_eq,
+                            initial_seed_usd=now_init_seed,
+                            portion_mode=portion_mode,
+                            exec_price=exec_order_p,
+                        )
+
+                        (
+                            can_proceed_g,
+                            eff_free_cash_g,
+                            bp_usd_g,
+                            guard_res_g,
+                        ) = await _check_and_execute_guard30_or_reserve_injection(
+                            context=context,
+                            st_now=st_now,
+                            exec_order_p=exec_order_p,
+                            portion_budget=portion_budget_g,
+                            l1_actual_cost_usd=0.0,
+                            is_dip_promotion=False,
+                            is_vacant_l1_reentry=False,
+                            trigger_desc=(
+                                f"황금시간({now_g_mode} · RSI {fresh_rsi:.1f}) 전액매수"
+                            ),
+                        )
+                        if not can_proceed_g:
+                            return {
+                                "status": "HOLD_GOLDEN_GUARD30_WAITING_DEPOSIT",
+                                "guard_eval": guard_res_g,
+                            }
+
+                        buy_qty_g, est_spent_g = (
+                            resolve_allin_affordable_buy_qty(
+                                price_t=exec_order_p,
+                                free_cash_usd=eff_free_cash_g,
+                                broker_buying_power_usd=(
+                                    bp_usd_g if bp_usd_g > 0.0 else None
+                                ),
+                            )
+                        )
+                        if buy_qty_g > 0:
+                            g_lot_type = str(
+                                re_g_sig.get("lot_type") or "GOLDEN_POCKET"
+                            )
+                            cid_prefix = (
+                                "GLDPKT"
+                                if g_lot_type == "GOLDEN_POCKET"
+                                else "GLDL1"
+                            )
+                            cid = generate_client_order_id(prefix=cid_prefix)
+                            try:
+                                ord_res = await context.api.create_order(
+                                    symbol=TARGET_SYMBOL,
+                                    side="BUY",
+                                    quantity=buy_qty_g,
+                                    price=exec_order_p,
+                                    order_type="LIMIT",
+                                    time_in_force="DAY",
+                                    client_order_id=cid,
+                                    enforce_daymarket_block=True,
+                                )
+                                oid = str(
+                                    ord_res.get("orderId") or ""
+                                ).strip()
+                                next_target_q_g = (
+                                    safe_int(
+                                        st_now.get("l1_target_quota_qty"), 0
+                                    )
+                                    if g_lot_type == "GOLDEN_POCKET"
+                                    else buy_qty_g
+                                )
+                                await context.ledger.update_state(
+                                    TARGET_SYMBOL,
+                                    l1_target_quota_qty=next_target_q_g,
+                                    last_golden_allin_date=today_est_str,
+                                    buy_order_id=oid,
+                                    client_order_id=cid,
+                                    ordered_qty=buy_qty_g,
+                                    buy_price=exec_order_p,
+                                    pending_portion_budget=est_spent_g,
+                                    pending_lot_type=g_lot_type,
+                                    pending_step_up_min_price=0.0,
+                                    last_modify_mono=time.monotonic(),
+                                )
+                                context.wakeup_event.set()
+                                logger.info(
+                                    "🌟 [Case 80 SOXL 황금시간(07:00~07:50 EST) RSI %.2f <= 19.0 가용시드 100%% 전액매수(%s) 발주] %d주 @ 지정가 $%.2f (예상원금 $%.2f · orderId=%s)",
+                                    fresh_rsi,
+                                    g_lot_type,
+                                    buy_qty_g,
+                                    exec_order_p,
+                                    est_spent_g,
+                                    oid,
+                                )
+                                return {
+                                    "status": "GOLDEN_ALLIN_BUY_ORDERED",
+                                    "mode": now_g_mode,
+                                    "lot_type": g_lot_type,
+                                    "rsi_14": fresh_rsi,
+                                    "orderId": oid,
+                                    "qty": buy_qty_g,
+                                    "price": exec_order_p,
+                                }
+                            except Exception as exc:
+                                logger.warning(
+                                    "Case 80 황금시간 전액매수(%s) 주문 발주 예외: %s",
+                                    g_lot_type,
+                                    exc,
+                                )
+                                return {
+                                    "status": "GOLDEN_ORDER_ERROR",
+                                    "error": str(exc),
+                                }
+
+    is_zero_shares = bool(len(buckets) == 0 and (h_qty == 0 or h_qty == gp.qty))
     has_active_l1 = has_active_l1_bucket(buckets)
     # 🚨 Case 71, Case 72 & Case 73: 상단에 2층 ~ 7층 그리드(GRID_L2 ~ GRID_L7)가 남아 있고 1층이 익절되어 공석인 상태!
     is_l2_only_vacant_l1 = bool(len(buckets) > 0 and not has_active_l1)
 
     # -----------------------------------------------------------------------
-    # [분기 A : 보유 잔고 0주 상태 (is_zero_shares)]
+    # [분기 A : 그리드 보유 잔고 0주 상태 (is_zero_shares)]
     # -> 0주 싸이클 종료 후 60.0초 타임쉴드 경과 확인 완료 뒤 실시간 현재가를 직접 조회하여 '현재가 지정가(LIMIT)'로 1층 산입!
     # -----------------------------------------------------------------------
     if is_zero_shares:
+        # MODIFIED [Case 80]: 그리드가 0주인데 독립 골든포켓(gp.is_active)에 가용 현금 100%가 투입되어 있는 동안에는
+        # 매 1.5초마다 불필요하게 시세 API를 재조회하지 않고 골든포켓(+1.50%) 익절로 현금이 환원될 때까지 조용히 대기한다!
+        min_req_0sh_guard = max(
+            live_p * (1.0 + ROUND_TRIP_FEE_RATE_PCT / 100.0),
+            (core_equity * PORTION_RATIO_LOCKED) * MIN_DIP_BUDGET_RATIO,
+        )
+        if gp.is_active and free_cash < min_req_0sh_guard:
+            return {
+                "status": "HOLD_ZERO_GRID_CASH_IN_GOLDEN_POCKET",
+                "golden_pocket_qty": gp.qty,
+                "free_cash_usd": free_cash,
+            }
+
         async with context.in_memory_ordering_lock:
             async with context.dual_strike_mutex:
                 st_now = context.ledger.get_state(TARGET_SYMBOL)
@@ -1464,9 +1890,6 @@ async def execute_seed_protected_buy_gate_plugin(
 
     # -----------------------------------------------------------------------
     # [분기 B-1 · Case 73 & Case 77 : 상단 그리드(2층 ~ 7층)만 보유 중 (1층 공석, is_l2_only_vacant_l1 == True)]
-    # -> 10분 게이트를 기다리지 않고 매도 후 60.0초 & 매 60.0초(1분) 타임쉴드 주기로 실시간 현재가를 조회하되,
-    #    현재가 <= 2층 단가(buckets[0].book_price) 상한 가드 하에서 눌림(-1.00%) OR 돌파(+1.00%) 시
-    #    GUARD30 및 온디맨드 예비수혈(Case 77)을 거쳐 즉시 독립 1층 재장전!
     # -----------------------------------------------------------------------
     if is_l2_only_vacant_l1:
         in_re_shield, rem_re_sec = is_within_reentry_monitor_time_shield(
@@ -1500,10 +1923,6 @@ async def execute_seed_protected_buy_gate_plugin(
         )
         sig_type = str(reentry_sig.get("signal_type") or "HOLD_WAIT_GATE")
 
-        # 🚨 [Case 73 & Case 74]:
-        # 1) 현재가 > 2층 단가(HOLD_PREVENT_INVERSION)이거나
-        # 2) 직전 익절가 대비 -1.00% < chg < +1.00% 횡보 구간(HOLD_WAIT_GATE)이면
-        # 즉시 매수를 패스(daily_seed_protect_pass_cnt += 1)하고 다음 60.0초(1분) 재장전 타임쉴드를 장전한다!
         if not bool(reentry_sig.get("should_buy")):
             new_pass_cnt = safe_int(st.get("seed_protect_pass_cnt"), 0) + 1
             new_day_pass = (
@@ -1556,7 +1975,6 @@ async def execute_seed_protected_buy_gate_plugin(
                 ).strip():
                     return {"status": "ALREADY_ORDERING_IN_MUTEX"}
 
-                # Case 73: 뮤텍스 내부에서 최신 지층 상태를 재검증하여 이미 활성 1층이 채워졌거나 0주가 되었으면 탈출
                 now_buckets = buckets_from_dicts(st_now.get("buckets", []))
                 if not now_buckets or has_active_l1_bucket(now_buckets):
                     return {"status": "L1_STATE_CHANGED_IN_MUTEX"}
@@ -1600,6 +2018,7 @@ async def execute_seed_protected_buy_gate_plugin(
                         "seed_protect_pass_cnt": new_day_pass,
                     }
 
+                now_gp = pocket_from_dict(st_now.get("golden_pocket"))
                 now_free_cash = max(
                     0.0, safe_float(st_now.get("free_cash_usd"), 0.0)
                 )
@@ -1612,13 +2031,14 @@ async def execute_seed_protected_buy_gate_plugin(
                 now_inj_res = max(
                     0.0, safe_float(st_now.get("injected_reserve_usd"), 0.0)
                 )
+                now_inv_tot = sum(b.actual_cost_usd for b in now_buckets) + (
+                    now_gp.actual_cost_usd if now_gp.is_active else 0.0
+                )
                 now_core_eq = max(
                     now_init_seed,
-                    (now_free_cash + sum(b.actual_cost_usd for b in now_buckets))
-                    - now_inj_res,
+                    (now_free_cash + now_inv_tot) - now_inj_res,
                 )
 
-                # 🚨 Case 67 & Case 77: 순수 코어 총자산 기준 min(1회분 예산 상한 주수, 기준가 고정 정량) 산출
                 quota_ref_p = max(
                     0.01,
                     safe_float(
@@ -1634,7 +2054,6 @@ async def execute_seed_protected_buy_gate_plugin(
                     exec_price=exec_order_p,
                 )
 
-                # 🚨 Case 77: GUARD30 검문 및 토스 실계좌 여유자금 감지 기반 온디맨드 예비수혈 실행
                 (
                     can_proceed_re,
                     eff_free_cash_re,
@@ -1743,10 +2162,7 @@ async def execute_seed_protected_buy_gate_plugin(
                 }
 
     # -----------------------------------------------------------------------
-    # [NEW · 분기 B-0 · Case 78 : 활성 1층 부분 체결 미체결 잔량(rem_quota_qty > 0) 존재 시]
-    # -> 매수 후 60.0초 타임쉴드 경과 시점부터 10분 게이트를 기다리지 않고 매 1.5초 실시간 모니터마다
-    #    현재가(live_p)가 기존 1층 단가(buckets[0].book_price) 이하에 도래했는지 대조하여,
-    #    도래 즉시 미체결 잔량(rem_quota_qty)을 TOPUP_1FL 지정가로 발주하고 60.0초간 대기한다!
+    # [분기 B-0 · Case 78 : 활성 1층 부분 체결 미체결 잔량(rem_quota_qty > 0) 존재 시]
     # -----------------------------------------------------------------------
     l1_target_q = max(
         buckets[0].qty, safe_int(st.get("l1_target_quota_qty"), 0)
@@ -1875,9 +2291,7 @@ async def execute_seed_protected_buy_gate_plugin(
 
     # -----------------------------------------------------------------------
     # [분기 B-2 : 활성 1층 보유 중 (has_active_l1_bucket(buckets) == True)]
-    # -> 04:07 EST 기점 10분 고정 매수 게이트 신규 버킷 도래 시(또는 시드고갈 입금 대기 중 60초 주기 도래 시)
-    #    정적 기억 최저가(cycle_min_buy_price) 기준 4단 와이드 신저가 OR
-    #    STEP2X_15PCT_C20 3중 안전문(-15.0% 스텝업 해금) 추매(DIP_1FL) 판정! (Case 36, 60, 64, 65, 67, 71, 72, 76, 77)
+    # -> 04:07 EST 기점 10분 고정 매수 게이트 신규 버킷 도래 시 정적 기억 최저가 4단 와이드 OR STEP2X_15PCT_C20 스텝업 추매 판정!
     # -----------------------------------------------------------------------
     is_gate_open, cur_bucket_id, today_str, b_info = (
         evaluate_buy_gate_bucket_status(
@@ -1922,8 +2336,6 @@ async def execute_seed_protected_buy_gate_plugin(
         0.0 if unlock_mode in ("STATIC", "NONE", "OFF") else STEP_UP_2X_DROP_PCT
     )
 
-    # 🚨 [Case 60, Case 72 & Case 76]:
-    # 정적 신저가(STATIC_NEW_LOW)와 STEP2X_15PCT_C20 3중 안전문(UNLOCK_STEP2X_15P_C20) 동시 판정!
     dip_eval = evaluate_step_up_2x_dip_signal(
         live_price=fresh_live_p,
         buckets=buckets,
@@ -1943,7 +2355,6 @@ async def execute_seed_protected_buy_gate_plugin(
     chg_for_buy_pct = safe_float(dip_eval.get("chg_static_pct"), 0.0)
     lot_tag = "DIP_1FL"
 
-    # 🛡️ [시드보호 패스 판정] 정적 4단 와이드 신저가와 STEP2X_15PCT_C20 스텝업 해금 조건에 모두 미달 시 100% 패스!
     if not bool(dip_eval.get("should_buy")):
         new_pass_cnt = safe_int(st.get("seed_protect_pass_cnt"), 0) + 1
         new_day_pass = safe_int(st.get("daily_seed_protect_pass_cnt"), 0) + 1
@@ -1967,12 +2378,9 @@ async def execute_seed_protected_buy_gate_plugin(
             "seed_protect_pass_cnt": new_day_pass,
         }
 
-    # 🎯 [정적 4단 와이드 신저가 OR STEP2X_15PCT_C20 스텝업 해금 조건 충족]
-    # Case 67 이중 캡핑, Case 77 GUARD30/예비수혈 검문 후 '조회된 현재가(fresh_live_p) 지정가(LIMIT)'로 발주한다!
     async with context.in_memory_ordering_lock:
         async with context.dual_strike_mutex:
             st_now = context.ledger.get_state(TARGET_SYMBOL)
-            # Case 36, Case 44 & Case 76: 뮤텍스 내부에서 매수/매도 미결 주문, 지층 상태, 10분 버킷 중복 여부를 3중 재검증!
             if str(st_now.get("buy_order_id") or "").strip() or str(
                 st_now.get("sell_order_id") or ""
             ).strip():
@@ -2008,6 +2416,7 @@ async def execute_seed_protected_buy_gate_plugin(
             now_drop_pct, _, _ = get_golden8_prog_thresholds(
                 held_lots=now_held_lots, threshold_mode=threshold_mode
             )
+            now_gp = pocket_from_dict(st_now.get("golden_pocket"))
             now_free_cash = max(0.0, safe_float(st_now.get("free_cash_usd"), 0.0))
             now_init_seed = max(
                 100.0,
@@ -2022,10 +2431,12 @@ async def execute_seed_protected_buy_gate_plugin(
                 0.0, safe_float(st_now.get("injected_reserve_usd"), 0.0)
             )
             now_real_eq = max(100.0, now_init_seed + now_cum_net)
+            now_inv_tot = sum(b.actual_cost_usd for b in now_buckets) + (
+                now_gp.actual_cost_usd if now_gp.is_active else 0.0
+            )
             now_core_eq = max(
                 now_init_seed,
-                (now_free_cash + sum(b.actual_cost_usd for b in now_buckets))
-                - now_inj_res,
+                (now_free_cash + now_inv_tot) - now_inj_res,
             )
 
             now_dip_eval = evaluate_step_up_2x_dip_signal(
@@ -2084,7 +2495,6 @@ async def execute_seed_protected_buy_gate_plugin(
             )
             exec_order_p = max(0.01, min(cur_limit_p, max_trigger_p))
 
-            # 🚨 Case 67 & Case 77: 순수 코어 총자산 기준 min(1회분 예산 상한 주수, 기준가 고정 정량) 산출
             target_qty, portion_budget = compute_golden8_quota_qty(
                 anchor_price=quota_ref_p,
                 current_total_equity=now_core_eq,
@@ -2093,8 +2503,6 @@ async def execute_seed_protected_buy_gate_plugin(
                 exec_price=exec_order_p,
             )
 
-            # 🚨 Case 77: GUARD30(30% 자투리 승격 방지 가드) 및 토스 실계좌 여유자금 감지 기반 온디맨드 예비수혈 실행!
-            # (미입금으로 차단될 경우 cur_bucket_id 를 소모하지 않고 60초 입금 감지 모드로 대기하여 입금 즉시 체결 보장!)
             (
                 can_proceed_dip,
                 eff_free_cash_dip,

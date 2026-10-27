@@ -2,33 +2,36 @@
 """
 # MODIFIED: defense_plugin.py
 순수 롱(SOXL) 매수 04:07 ~ 16:00 EST 제한 & 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장
-오버나이트 7층 골디락스 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 지층관리 스나이퍼 전용 (Step 04 / 06):
+오버나이트 7층 골디락스 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 및
+황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket) 지층관리 스나이퍼 전용 (Step 08 / 10):
 1) 🚨 [Case 66 & Case 79 봇 주문 진행 중 가로채기 차단 및 04:00 / 16:00 세션 경계 미결 매수·매도 선행 정산 가드]
    원장에 미결 매수(buy_order_id) 또는 미결 매도(sell_order_id)가 존재할 때 reconcile 모듈이나
    04:00 EST 오프닝 안정화 / 16:00 EST 마감 결산이 호출되면, 미체결 일괄 취소 전에
    즉시 sync_pending_buy_order_plugin() / sync_pending_sell_order_plugin() 을 선행 호출하여
    데이마켓·애프터마켓·정규장 막판 체결분의 텔레그램 체결 알림 · 세후 실현익 및 자투리 절약금 복리 누적 ·
    양방향 60초 타임쉴드 각인이 100% 완수되도록 보장!
-2) 🛡️ [Case 61, Case 65 & Case 69 양방향 15초 인덱싱 그레이스 쉴드 전 구간(h_qty != ledger_qty) 최우선 적용]
-   - 매수 체결뿐만 아니라 매도 체결(개별 층 익절 및 0주 졸업) 직후 15.0초 동안은 모든 수량 불일치(h_qty != ledger_qty)에서
+2) 🛡️ [Case 61, Case 65, Case 69 & Case 80 양방향 15초 인덱싱 그레이스 쉴드 전 구간(h_qty != ledger_qty) 최우선 적용]
+   - 원장 총 보유 수량을 ledger_qty = sum(b.qty for b in buckets) + golden_pocket.qty 로 통합 산출하여
+     골든포켓 보유 중에도 유령 추매/매도 오판을 원천 차단!
+   - 매수 체결뿐만 아니라 매도 체결(개별 층 익절 · 골든포켓 익절 및 0주 졸업) 직후 15.0초 동안은 모든 수량 불일치(h_qty != ledger_qty)에서
      즉시 PROTECTED_BY_AUTO_FILL_GRACE_SHIELD 를 반환하여, 토스 잔고 API 인덱싱 시차(0.1 ~ 0.4초)로 인한
      유령 추매(h_qty > ledger_qty) ➔ 유령 부분매도(h_qty < ledger_qty) 핑퐁 오염 및 0주 졸업 직후 과거 백업 덮어쓰기를 원천 봉쇄!
    - 수동 전량 청산(CLEARED_TO_ZERO_HOLDINGS)으로 0주 싸이클이 끝나는 순간에도 토스 CLOSED 체결원장에서 실제 매도 체결가를 역추적하여
-     보유 지층의 순수 매수 원금 대비 세후 실현수익(net_pnl_usd)을 원장(cumulative_realized_net_usd · free_cash_usd)에 즉시 복리 산입하고,
+     보유 지층 및 골든포켓의 순수 매수 원금 대비 세후 실현수익(net_pnl_usd)을 원장(cumulative_realized_net_usd · free_cash_usd)에 즉시 복리 산입하고,
      l1_target_quota_qty = 0 클리어(Case 78) 및 compute_reserve_repayment_on_zero() 로 온디맨드 예비시드 원금을 자동 상환(Case 77)하며,
      mark_post_sell_time_shield(is_cycle_end=True) 와 last_sell_fill_ts / last_cycle_end_ts / last_reentry_eval_ts=0.0 을 각인하여 60.0초 타임쉴드를 강제!
-3) 🛡️ [Case 63, Case 69, Case 71 ~ Case 79 : 수동 매매 CLOSED 체결가 역추적 · 단가 비교 층간 편입 · 층별 순수 원가 1:1 매칭 복리 정산 · 데이마켓 시세 미제공 100% 묵음]
+3) 🛡️ [Case 63, Case 69, Case 71 ~ Case 80 : 수동 매매 CLOSED 체결가 역추적 · 단가 비교 층간 편입 · 층별/포켓별 순수 원가 1:1 매칭 복리 정산 · 데이마켓 시세 미제공 100% 묵음]
    - h_qty > ledger_qty 수동 추매 화해 시 토스 CLOSED 주문 원장에서 실제 수동 매수 체결가를 조회한 뒤,
-     1층 ~ 7층 단가와 비교하여 오름차순(저가 1층 ➔ 고가 7층) 층 사이에 스마트 편입하며 정적 기억저가 잠금 유지!
+     1층 ~ 7층 단가와 비교하여 오름차순(저가 1층 ➔ 고가 7층) 층 사이에 스마트 편입하며 정적 기억저가 및 골든포켓 잠금 유지!
    - h_qty < ledger_qty 수동 부분매도 화해 시 토스 이동평균법으로 희석된 매입금액(h_pur)을 덮어쓰지 않고,
-     match_and_remove_sold_buckets_7tier() 로 하단 층부터 차감된 층의 순수 매수 원가만 1:1 매칭해 세후 실현수익을 복리 산입하며
-     남은 각 그리드 층 고유의 순수 매수 단가(book_price == actual_avg_price)를 100% 보존!
+     match_and_remove_sold_buckets_7tier(..., golden_pocket=gp) 로 차감된 물량의 순수 매수 원가만 1:1 매칭해 세후 실현수익을 복리 산입하며
+     남은 각 그리드 층 및 골든포켓 고유의 순수 매수 단가(book_price == actual_avg_price)를 100% 보존!
 4) 🔗 [tg_ui_plugin.py 심볼 완벽 호환] 전술 제어반(/settlement)에서 봇 작동 OFF ➔ ON 재개 시 호출되는
    relock_stratum_on_bot_resume() 함수를 정식 제공하여 AST 심볼 임포트 무결성 100% 충족!
-5) 04:00 ~ 04:06 EST 프리장 개장 초기 호가 안정화 및 당일 시드보호 패스(daily_seed_protect_pass_cnt · Case 74) ·
-   당일 스텝업 해금(daily_unlock_buy_events · Case 76) · 당일 예비수혈/자투리차단(Case 77) 0회 리셋(단 1회 입금 알림 래치 보존) ·
+5) 04:00 ~ 04:06 EST 프리장 개장 초기 호가 안정화 및 당일 시드보호 패스(Case 74) · 당일 스텝업 해금(Case 76) ·
+   당일 황금시간 전액매수/포켓익절(Case 80) · 당일 예비수혈/자투리차단(Case 77) 0회 리셋(단 1회 입금 알림 래치 보존) ·
    16:00 EST 일일 결산 후 애프터·데이마켓 익절 감시 무중단 직결(Case 79) · 17:00 EST 일일 GC 및 3중 금고 스냅샷 백업(Case 68)
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 79 완벽 준수
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 완벽 준수
 """
 
 from __future__ import annotations
@@ -42,16 +45,20 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from quant_engine import (
+    GoldenAllInPocket,
     MAX_GRID_TIERS_7,
     MAX_GRID_TIERS_12,
     MAX_RESERVE_PORTIONS,
     StratumBucket,
     buckets_from_dicts,
     buckets_to_dicts,
+    calc_sell_realized_pnl,
     compute_reserve_repayment_on_zero,
     enforce_true_breakeven_floor_on_buckets,
     has_active_l1_bucket,
     match_and_remove_sold_buckets_7tier,
+    pocket_from_dict,
+    pocket_to_dict,
     relabel_upper_grid_tiers,
     summarize_stratum_portfolio,
     vrev_add_quota_lot_and_merge_2tier,
@@ -135,7 +142,7 @@ async def _probe_manual_fill_price_safe(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 1] 로컬 7층 골디락스 그리드 원장 ↔ 토스 실보유 잔고(/api/v1/holdings) 무결성 화해 (Case 58 ~ 79)
+# [핵심 1] 로컬 7층 골디락스 그리드 + 독립 골든포켓 원장 ↔ 토스 실보유 잔고(/api/v1/holdings) 무결성 화해 (Case 58 ~ 80)
 # ---------------------------------------------------------------------------
 async def reconcile_stratum_with_broker_holdings_plugin(
     context: Any,
@@ -145,19 +152,10 @@ async def reconcile_stratum_with_broker_holdings_plugin(
     force_sync: bool = False,
 ) -> Dict[str, Any]:
     """
-    🚨 Case 58, Case 60, Case 61, Case 63, Case 65, Case 66, Case 68, Case 69, Case 71 ~ Case 79:
+    🚨 Case 58, Case 60, Case 61, Case 63, Case 65, Case 66, Case 68, Case 69, Case 71 ~ Case 80:
     프로세스 재기동 시, 04:00 EST 오프닝 동기화 시, 또는 장중/애프터장/데이장 사용자가 토스 앱에서 수동 매매했을 때
-    로컬 7층 그리드 원장(buckets : 1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대)의 총 보유 주수(ledger_qty)와
-    토스 실계좌 보유 주수(h_qty)를 대조하여 화해한다:
-    0) 🛡️ [Case 66 핵심 방어 : 봇 미결 주문(buy_order_id / sell_order_id) 진행 중 가로채기 원천 차단]
-    1) 🛡️ [Case 61 & Case 69 핵심 방어 : 모든 수량 불일치(h_qty != ledger_qty) 최상단 양방향 15초 그레이스 쉴드]
-    2) 🛡️ [Case 63, Case 65, Case 77 & Case 78 핵심 방어 : 수동 전량 청산(0주) 감지 시 토스 CLOSED 체결원장 역추적으로
-       보유 전 지층의 순수 원금 대비 세후 실현수익을 복리 산입하고, l1_target_quota_qty = 0 클리어 및
-       온디맨드 예비시드 원금을 자동 상환하며, 60.0초 타임쉴드 강제 각인]
-    3) 🛡️ [Case 63, Case 69, Case 71 ~ Case 78 핵심 방어 :
-       - h_qty > ledger_qty 수동 추매 화해 시 CLOSED 실체결가를 역추적하여 1 ~ 7층 단가 비교 오름차순 층간 스마트 편입!
-       - h_qty < ledger_qty 수동 부분매도 화해 시 토스 이동평균 희석 원금(h_pur) 덮어쓰기 영구 금지 및
-         하단 층부터 차감된 층의 순수 매수 원가만 1:1 매칭해 세후 실현수익 복리 산입 & 잔여 1 ~ 7층 순수 단가 보존!]
+    로컬 7층 그리드 원장(buckets)과 독립 골든포켓(golden_pocket)의 합산 보유 주수(ledger_qty = grid_qty + gp_qty)를
+    토스 실계좌 보유 주수(h_qty)와 대조하여 화해한다.
     """
     if not isinstance(holdings, dict) or not getattr(
         context, "holdings_fetch_ok", True
@@ -199,7 +197,11 @@ async def reconcile_stratum_with_broker_holdings_plugin(
     buckets = enforce_true_breakeven_floor_on_buckets(
         buckets_from_dicts(st.get("buckets", []))
     )
-    ledger_qty = sum(b.qty for b in buckets)
+    gp = pocket_from_dict(st.get("golden_pocket"))
+    grid_qty = sum(b.qty for b in buckets)
+    gp_qty = gp.qty if gp.is_active else 0
+    # NEW [Case 80]: 그리드 보유 수량 + 독립 골든포켓 수량 통합 대조
+    ledger_qty = grid_qty + gp_qty
 
     h_info = holdings.get(TARGET_SYMBOL, {})
     h_qty = max(0, safe_int(h_info.get("qty"), 0))
@@ -229,15 +231,19 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         return {
             "status": "STRATUM_IN_SYNC",
             "held_shares": h_qty,
+            "grid_shares": grid_qty,
+            "pocket_shares": gp_qty,
             "tiers": len(buckets),
         }
 
     # 🚨 [Case 61 & Case 69 최상단 양방향 15.0초 인덱싱 그레이스 쉴드]
     if is_within_auto_fill_grace_shield(context, TARGET_SYMBOL):
         logger.info(
-            "🛡️ [Case 61/69 양방향 인덱싱 그레이스 쉴드 작동] 최근 자동 체결 직후 잔고 API 시차 감지(토스 %d주 vs 원장 %d주) -> 원장 무결성 안전 보호",
+            "🛡️ [Case 61/69 양방향 인덱싱 그레이스 쉴드 작동] 최근 자동 체결 직후 잔고 API 시차 감지(토스 %d주 vs 원장 %d주[그리드 %d+포켓 %d]) -> 원장 무결성 안전 보호",
             h_qty,
             ledger_qty,
+            grid_qty,
+            gp_qty,
         )
         return {
             "status": "PROTECTED_BY_AUTO_FILL_GRACE_SHIELD",
@@ -252,16 +258,18 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             "open_count": len(open_orders),
         }
 
-    # [케이스 2] 토스 실보유 0주인데 로컬 원장에 지층이 남아 있는 경우
-    # (데이장/장중 수동 전량 청산 -> 전 지층 순수원가 매칭 세후 실현수익 복리 산입 & 예비시드 자동 상환 & 0주 싸이클 종료)
+    # [케이스 2] 토스 실보유 0주인데 로컬 원장에 지층/골든포켓이 남아 있는 경우
+    # (데이장/장중 수동 전량 청산 -> 전 지층 및 골든포켓 순수원가 매칭 세후 실현수익 복리 산입 & 예비시드 자동 상환 & 0주 싸이클 종료)
     if h_qty == 0 and ledger_qty > 0:
+        default_fb_p = (
+            buckets[0].actual_avg_price
+            if buckets
+            else (gp.actual_avg_price if gp.is_active else 50.0)
+        )
         fb_sell_p = (
             live_p
             if live_p > 0.0
-            else (
-                safe_float(st.get("anchor_price"), 0.0)
-                or buckets[0].actual_avg_price
-            )
+            else (safe_float(st.get("anchor_price"), 0.0) or default_fb_p)
         )
         manual_sell_p, updated_settled_oids = await _probe_manual_fill_price_safe(
             context=context,
@@ -275,6 +283,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             delta_remove_qty=ledger_qty,
             sell_exec_price=manual_sell_p,
             max_tiers=MAX_GRID_TIERS_7,
+            golden_pocket=gp,
         )
         pnl_info = match_res["pnl_info"]
         gross_pnl = safe_float(pnl_info.get("gross_pnl_usd"), 0.0)
@@ -282,12 +291,36 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         net_pnl = safe_float(pnl_info.get("net_pnl_usd"), 0.0)
         net_rate = safe_float(pnl_info.get("net_rate_pct"), 0.0)
 
+        sold_pocket_q = safe_int(match_res.get("sold_pocket_qty"), 0)
+        gp_sell_inc = 1 if sold_pocket_q > 0 else 0
+        pocket_net_pnl = 0.0
+        if sold_pocket_q > 0 and gp.is_active:
+            p_pnl = calc_sell_realized_pnl(
+                sold_qty=sold_pocket_q,
+                sell_exec_price=manual_sell_p,
+                sold_actual_cost_usd=gp.actual_cost_usd,
+            )
+            pocket_net_pnl = safe_float(p_pnl.get("net_pnl_usd"), 0.0)
+
         tot_sell_ev = safe_int(st.get("total_sell_events"), 0) + 1
         tot_sold_sh = safe_int(st.get("total_sold_shares"), 0) + ledger_qty
         win_ev = safe_int(st.get("win_sell_events"), 0) + (
             1 if net_pnl > 0.0 else 0
         )
         day_sell_ev = safe_int(st.get("daily_sell_events"), 0) + 1
+        gp_sell_cnt = safe_int(st.get("golden_pocket_sell_cnt"), 0) + gp_sell_inc
+        day_gp_sell_cnt = (
+            safe_int(st.get("daily_golden_pocket_sell_cnt"), 0) + gp_sell_inc
+        )
+        gp_net_cum = round(
+            safe_float(st.get("golden_realized_net_usd"), 0.0) + pocket_net_pnl,
+            4,
+        )
+        gp_net_day = round(
+            safe_float(st.get("daily_golden_realized_net_usd"), 0.0)
+            + pocket_net_pnl,
+            4,
+        )
 
         cum_gross = round(
             safe_float(st.get("cumulative_realized_gross_usd"), 0.0)
@@ -365,6 +398,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         updated_st = await context.ledger.update_state(
             TARGET_SYMBOL,
             buckets=[],
+            golden_pocket=GoldenAllInPocket().to_dict(),
             anchor_price=manual_sell_p,
             cycle_min_buy_price=0.0,
             ratchet_anchor_price=manual_sell_p,
@@ -380,7 +414,6 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             last_sell_fill_ts=now_zero_ts,
             last_cycle_end_ts=now_zero_ts,
             last_sell_gate_eval_ts=0.0,
-            # Case 73 & Case 76: 수동 전량 청산 시 1층 공석 재장전 타임쉴드 및 스텝업 대기값 0.0 초기화
             last_reentry_eval_ts=0.0,
             buy_order_id="",
             sell_order_id="",
@@ -388,6 +421,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             target_sell_price=0.0,
             pending_sell_mode="",
             pending_sell_indices=[],
+            pending_sell_pocket_qty=0,
             pending_lot_type="",
             pending_step_up_min_price=0.0,
             last_settled_order_ids=updated_settled_oids,
@@ -395,6 +429,10 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             total_sold_shares=tot_sold_sh,
             win_sell_events=win_ev,
             daily_sell_events=day_sell_ev,
+            golden_pocket_sell_cnt=gp_sell_cnt,
+            daily_golden_pocket_sell_cnt=day_gp_sell_cnt,
+            golden_realized_net_usd=gp_net_cum,
+            daily_golden_realized_net_usd=gp_net_day,
             cumulative_realized_gross_usd=cum_gross,
             cumulative_realized_fee_usd=cum_fee,
             cumulative_realized_net_usd=cum_net,
@@ -437,7 +475,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             "free_cash_usd": free_cash_now,
         }
 
-    # [케이스 3] 토스 실보유 수량(h_qty > 0)이 존재하는데 로컬 원장이 비어 있는 경우 (Case 68 백업 금고 우선 복원 또는 초기 기동 복원)
+    # [케이스 3] 토스 실보유 수량(h_qty > 0)이 존재하는데 로컬 원장이 비어 있는 경우 (Case 68 & Case 80 백업 금고 우선 복원)
     if h_qty > 0 and ledger_qty == 0:
         in_sell_sh, rem_sell_s = is_within_post_sell_time_shield(
             context, st, TARGET_SYMBOL
@@ -467,26 +505,34 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             vault_buckets = enforce_true_breakeven_floor_on_buckets(
                 buckets_from_dicts(vault_st.get("buckets", []))
             )
-            vault_qty = sum(b.qty for b in vault_buckets)
+            vault_gp = pocket_from_dict(vault_st.get("golden_pocket"))
+            vault_qty = sum(b.qty for b in vault_buckets) + (
+                vault_gp.qty if vault_gp.is_active else 0
+            )
             vault_seed = _resolve_valid_seed_from_state(vault_st)
 
-            if vault_qty == h_qty and len(vault_buckets) > 0:
+            if vault_qty == h_qty and (
+                len(vault_buckets) > 0 or vault_gp.is_active
+            ):
                 restored_kw: Dict[str, Any] = dict(vault_st)
                 restored_kw["buckets"] = buckets_to_dicts(vault_buckets)
+                restored_kw["golden_pocket"] = vault_gp.to_dict()
                 restored_kw["initial_seed_usd"] = vault_seed
                 restored_kw["cycle_reanchor_credit_usd"] = 0.0
                 restored_kw["buy_order_id"] = ""
                 restored_kw["sell_order_id"] = ""
                 restored_kw["ordered_qty"] = 0
                 restored_kw["pending_sell_indices"] = []
+                restored_kw["pending_sell_pocket_qty"] = 0
                 restored_kw["pending_step_up_min_price"] = 0.0
                 if has_active_l1_bucket(vault_buckets):
                     restored_kw["last_reentry_eval_ts"] = 0.0
                 await context.ledger.update_state(TARGET_SYMBOL, **restored_kw)
                 logger.info(
-                    "🛡️ [Case 68/72/76/77 백업 금고 7층 그리드 100%% 원형 복원 완료] %d주 (%d개 지층 · 시드 $%.2f · 기억저가 $%.2f)",
+                    "🛡️ [Case 68/72/76/77/80 백업 금고 7층 그리드/골든포켓 100%% 원형 복원 완료] 총 %d주 (그리드 %d개층 + 골든포켓 %d주 · 시드 $%.2f · 기억저가 $%.2f)",
                     h_qty,
                     len(vault_buckets),
+                    vault_gp.qty,
                     vault_seed,
                     safe_float(vault_st.get("cycle_min_buy_price"), 0.0),
                 )
@@ -494,6 +540,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
                     "status": "RESTORED_FROM_BACKUP_VAULT",
                     "held_shares": h_qty,
                     "tiers": len(vault_buckets),
+                    "pocket_shares": vault_gp.qty,
                 }
 
         # 백업 금고에 일치하는 지층이 없는 경우: 토스 실계좌 평균단가 기반으로 순수 원가 1층 복원
@@ -532,6 +579,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         update_kw: Dict[str, Any] = {
             "initial_seed_usd": init_seed,
             "buckets": buckets_to_dicts([restored_bucket]),
+            "golden_pocket": GoldenAllInPocket().to_dict(),
             "anchor_price": pure_ref_p,
             "cycle_min_buy_price": pure_ref_p,
             "ratchet_anchor_price": pure_ref_p,
@@ -541,12 +589,15 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             "sell_order_id": "",
             "ordered_qty": 0,
             "pending_sell_indices": [],
+            "pending_sell_pocket_qty": 0,
             "pending_step_up_min_price": 0.0,
             "entry_ts": now_sync_ts,
             "last_buy_fill_ts": now_sync_ts,
             "last_reentry_eval_ts": 0.0,
         }
         if isinstance(vault_st, dict):
+            if vault_st.get("golden_allin_mode"):
+                update_kw["golden_allin_mode"] = vault_st["golden_allin_mode"]
             for stat_k in (
                 "cumulative_realized_net_usd",
                 "cumulative_realized_gross_usd",
@@ -560,6 +611,12 @@ async def reconcile_stratum_with_broker_holdings_plugin(
                 "daily_seed_protect_pass_cnt",
                 "cond_unlock_buy_events",
                 "daily_unlock_buy_events",
+                "golden_allin_buy_events",
+                "daily_golden_allin_buy_events",
+                "golden_pocket_sell_cnt",
+                "daily_golden_pocket_sell_cnt",
+                "golden_realized_net_usd",
+                "daily_golden_realized_net_usd",
                 "used_reserve_portions_cnt",
                 "injected_reserve_usd",
                 "total_reserve_injected_cnt",
@@ -596,13 +653,14 @@ async def reconcile_stratum_with_broker_holdings_plugin(
     # [케이스 4] 토스 실보유 수량(h_qty > 0)과 로컬 원장 수량(ledger_qty > 0)이 부분 불일치하는 경우
     if h_qty > ledger_qty:
         # 4-1) 수동 추가 매수 동기화:
-        # 토스 CLOSED 주문 내역에서 실제 수동 매수 체결단가(est_buy_p)를 역추적한 뒤,
-        # vrev_add_quota_lot_and_merge_2tier() 를 통해 기존 1 ~ 7층 단가와 대소를 비교하여
-        # 크거나 작은 층 사이(오름차순: 저가 1층 ➔ 고가 7층)에 스마트 편입시킨다!
         delta_q = h_qty - ledger_qty
         fb_buy_p = live_p if live_p > 0.0 else h_avg
         if fb_buy_p <= 0.0:
-            fb_buy_p = buckets[0].actual_avg_price if buckets else 50.0
+            fb_buy_p = (
+                buckets[0].actual_avg_price
+                if buckets
+                else (gp.actual_avg_price if gp.is_active else 50.0)
+            )
 
         est_buy_p, updated_settled_oids = await _probe_manual_fill_price_safe(
             context=context,
@@ -657,15 +715,15 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             last_settled_order_ids=updated_settled_oids,
             entry_ts=now_sync_ts,
             last_buy_fill_ts=now_sync_ts,
-            # Case 73: 수동 추가매수로 활성 1층이 존재하므로 1층 공석 재장전 타임쉴드 시각 0.0 클리어
             last_reentry_eval_ts=0.0,
         )
         logger.info(
-            "➕ [SOXL 수동 추가매수 7층 그리드 단가비교 편입 완료] +%d주 @ $%.2f 반영 -> 총 %d주(%d개층 · 기억저가 $%.2f)",
+            "➕ [SOXL 수동 추가매수 7층 그리드 단가비교 편입 완료] +%d주 @ $%.2f 반영 -> 총 %d주(%d개층 + 골든포켓 %d주 · 기억저가 $%.2f)",
             delta_q,
             est_buy_p,
             h_qty,
             len(merged_buckets),
+            gp_qty,
             new_min_p,
         )
         return {
@@ -677,13 +735,13 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         }
 
     # 4-2) h_qty < ledger_qty (수동 부분 매도 또는 체결 후 잔여 수량 조정):
-    # 🚨 [Case 63, Case 69, Case 71, Case 72 & Case 78 핵심 방어 :
-    #     토스 이동평균 희석 원금(h_pur / h_avg) 덮어쓰기 영구 금지 ·
-    #     하단 층부터 차감된 층의 순수 매수 원가만 1:1 매칭하여 세후 실현수익 복리 산입 & 잔여 1 ~ 7층 단가 보존!]
     delta_remove = ledger_qty - h_qty
-    fb_part_sell_p = (
-        live_p if live_p > 0.0 else buckets[0].actual_avg_price
+    default_part_p = (
+        buckets[0].actual_avg_price
+        if buckets
+        else (gp.actual_avg_price if gp.is_active else 50.0)
     )
+    fb_part_sell_p = live_p if live_p > 0.0 else default_part_p
     manual_sell_p, updated_settled_oids = await _probe_manual_fill_price_safe(
         context=context,
         side="SELL",
@@ -696,19 +754,45 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         delta_remove_qty=delta_remove,
         sell_exec_price=manual_sell_p,
         max_tiers=MAX_GRID_TIERS_7,
+        golden_pocket=gp,
     )
     rem_buckets: List[StratumBucket] = match_res["rem_buckets"]
+    rem_gp_dict: Dict[str, Any] = match_res.get(
+        "rem_golden_pocket", GoldenAllInPocket().to_dict()
+    )
+    rem_gp_obj = pocket_from_dict(rem_gp_dict)
+    sold_pocket_q = safe_int(match_res.get("sold_pocket_qty"), 0)
+
     pnl_info = match_res["pnl_info"]
     gross_pnl = safe_float(pnl_info.get("gross_pnl_usd"), 0.0)
     fee_usd = safe_float(pnl_info.get("fee_usd"), 0.0)
     net_pnl = safe_float(pnl_info.get("net_pnl_usd"), 0.0)
     net_rate = safe_float(pnl_info.get("net_rate_pct"), 0.0)
 
+    gp_sell_inc = 1 if sold_pocket_q > 0 else 0
+    pocket_net_pnl = 0.0
+    if sold_pocket_q > 0 and gp.is_active:
+        sold_gp_cost = round(
+            gp.actual_cost_usd
+            - (rem_gp_obj.actual_cost_usd if rem_gp_obj.is_active else 0.0),
+            4,
+        )
+        p_pnl = calc_sell_realized_pnl(
+            sold_qty=sold_pocket_q,
+            sell_exec_price=manual_sell_p,
+            sold_actual_cost_usd=max(0.0, sold_gp_cost),
+        )
+        pocket_net_pnl = safe_float(p_pnl.get("net_pnl_usd"), 0.0)
+
     # Case 78: 수동 부분매도로 1층이 소진되었으면 l1_target_quota_qty = 0 클리어
     rem_has_l1 = has_active_l1_bucket(rem_buckets)
     next_l1_target_q = (
         max(rem_buckets[0].qty, safe_int(st.get("l1_target_quota_qty"), 0))
-        if (rem_buckets and rem_has_l1 and not bool(match_res.get("sold_l1_completely")))
+        if (
+            rem_buckets
+            and rem_has_l1
+            and not bool(match_res.get("sold_l1_completely"))
+        )
         else 0
     )
 
@@ -718,6 +802,18 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         1 if net_pnl > 0.0 else 0
     )
     day_sell_ev = safe_int(st.get("daily_sell_events"), 0) + 1
+    gp_sell_cnt = safe_int(st.get("golden_pocket_sell_cnt"), 0) + gp_sell_inc
+    day_gp_sell_cnt = (
+        safe_int(st.get("daily_golden_pocket_sell_cnt"), 0) + gp_sell_inc
+    )
+    gp_net_cum = round(
+        safe_float(st.get("golden_realized_net_usd"), 0.0) + pocket_net_pnl, 4
+    )
+    gp_net_day = round(
+        safe_float(st.get("daily_golden_realized_net_usd"), 0.0)
+        + pocket_net_pnl,
+        4,
+    )
 
     cum_gross = round(
         safe_float(st.get("cumulative_realized_gross_usd"), 0.0) + gross_pnl, 4
@@ -732,9 +828,24 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         safe_float(st.get("daily_realized_net_usd"), 0.0) + net_pnl, 4
     )
 
-    total_rem_cost = round(sum(b.actual_cost_usd for b in rem_buckets), 4)
+    total_rem_cost = round(
+        sum(b.actual_cost_usd for b in rem_buckets)
+        + (rem_gp_obj.actual_cost_usd if rem_gp_obj.is_active else 0.0),
+        4,
+    )
     pure_overall_avg = (
         round(total_rem_cost / float(h_qty), 4) if h_qty > 0 else 0.0
+    )
+
+    # 골든포켓만 수동 부분매도된 경우 기존 그리드 anchor_price 보존
+    is_pocket_only_manual = bool(
+        sold_pocket_q == delta_remove and len(rem_buckets) == len(buckets)
+    )
+    old_anchor_p = safe_float(st.get("anchor_price"), manual_sell_p)
+    next_anchor_p = (
+        old_anchor_p
+        if (is_pocket_only_manual and old_anchor_p > 0.0)
+        else manual_sell_p
     )
 
     now_part_sell_ts = time.time()
@@ -759,8 +870,9 @@ async def reconcile_stratum_with_broker_holdings_plugin(
     updated_st = await context.ledger.update_state(
         TARGET_SYMBOL,
         buckets=buckets_to_dicts(rem_buckets),
-        anchor_price=manual_sell_p,
-        ratchet_anchor_price=manual_sell_p,
+        golden_pocket=rem_gp_obj.to_dict(),
+        anchor_price=next_anchor_p,
+        ratchet_anchor_price=next_anchor_p,
         cycle_reanchor_credit_usd=0.0,
         l1_target_quota_qty=next_l1_target_q,
         waiting_reserve_deposit=False,
@@ -769,15 +881,19 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         last_reserve_check_ts=0.0,
         last_sell_fill_ts=now_part_sell_ts,
         last_sell_gate_eval_ts=0.0,
-        # Case 73: 수동 부분매도 직후 1층 공석 재장전 타임쉴드 시각을 0.0 으로 리셋하여 60초 매도타임쉴드 종료 즉시 재장전 검문 개시
         last_reentry_eval_ts=0.0,
         pending_sell_indices=[],
+        pending_sell_pocket_qty=0,
         pending_step_up_min_price=0.0,
         last_settled_order_ids=updated_settled_oids,
         total_sell_events=tot_sell_ev,
         total_sold_shares=tot_sold_sh,
         win_sell_events=win_ev,
         daily_sell_events=day_sell_ev,
+        golden_pocket_sell_cnt=gp_sell_cnt,
+        daily_golden_pocket_sell_cnt=day_gp_sell_cnt,
+        golden_realized_net_usd=gp_net_cum,
+        daily_golden_realized_net_usd=gp_net_day,
         cumulative_realized_gross_usd=cum_gross,
         cumulative_realized_fee_usd=cum_fee,
         cumulative_realized_net_usd=cum_net,
@@ -785,10 +901,11 @@ async def reconcile_stratum_with_broker_holdings_plugin(
     )
     free_cash_now = safe_float(updated_st.get("free_cash_usd"), 0.0)
     logger.info(
-        "➖ [Case 69/72 SOXL 수동 부분매도 7층 그리드 순수원가 정산 완료] %d주 -> %d주(%d개층) 조정 (매칭층: %s @ 체결가 $%.2f · 세후손익 %+.2f$ 복리산입 · 잔여순수평단 $%.2f 보존 · 토스이평 $%.2f 오염 차단)",
+        "➖ [Case 69/72/80 SOXL 수동 부분매도 순수원가 정산 완료] %d주 -> %d주(%d개층+포켓 %d주) 조정 (매칭층: %s @ 체결가 $%.2f · 세후손익 %+.2f$ 복리산입 · 잔여순수평단 $%.2f 보존 · 토스이평 $%.2f 오염 차단)",
         ledger_qty,
         h_qty,
         len(rem_buckets),
+        rem_gp_obj.qty,
         match_res.get("sold_tier_desc"),
         manual_sell_p,
         net_pnl,
@@ -798,12 +915,15 @@ async def reconcile_stratum_with_broker_holdings_plugin(
     if hasattr(context, "send_slim_alert"):
         s_sign = "+" if net_pnl >= 0.0 else "-"
         r_sign = "+" if net_rate >= 0.0 else ""
+        gp_rem_note = (
+            f"+골든포켓 {rem_gp_obj.qty}주" if rem_gp_obj.is_active else ""
+        )
         await context.send_slim_alert(
             title=f"➖ [SOXL 수동 부분매도 정산] {delta_remove}주 @ ${manual_sell_p:.2f} ({r_sign}{net_rate:.2f}%)",
             body=(
                 f"매칭층: {match_res.get('sold_tier_desc')} · "
                 f"세후순익 {s_sign}${abs(net_pnl):,.2f} 시드 복리산입 · "
-                f"잔여 {h_qty}주({len(rem_buckets)}개층 · 순수평단 ${pure_overall_avg:.2f}) 보존 · 가용현금 ${free_cash_now:,.2f}"
+                f"잔여 {h_qty}주({len(rem_buckets)}개층{gp_rem_note} · 순수평단 ${pure_overall_avg:.2f}) 보존 · 가용현금 ${free_cash_now:,.2f}"
             ),
         )
     return {
@@ -813,6 +933,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
         "manual_sell_price": manual_sell_p,
         "net_pnl_usd": net_pnl,
         "tiers": len(rem_buckets),
+        "pocket_shares": rem_gp_obj.qty,
         "actual_avg_price": pure_overall_avg,
         "book_price": pure_overall_avg,
     }
@@ -830,7 +951,7 @@ async def relock_stratum_on_bot_resume(
 ) -> Dict[str, Any]:
     """
     전술 제어반(/settlement)에서 스나이퍼 작동을 🔴 OFF ➔ 🟢 ON 으로 전환할 때
-    tg_ui_plugin.py 에서 호출하는 실잔고 ↔ 7층 그리드 원장 즉시 동기화 함수.
+    tg_ui_plugin.py 에서 호출하는 실잔고 ↔ 7층 그리드/골든포켓 원장 즉시 동기화 함수.
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     eff_holdings = holdings
@@ -869,7 +990,7 @@ async def relock_stratum_on_bot_resume(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] 04:00 ~ 04:06 EST 프리장 개장 초기 호가 안정화 · 데이마켓 미결 선행정산 · 일일 카운터 롤오버 (Case 66, 74, 76, 77, 79)
+# [핵심 2] 04:00 ~ 04:06 EST 프리장 개장 초기 호가 안정화 · 데이마켓 미결 선행정산 · 일일 카운터 롤오버 (Case 66, 74, 76, 77, 79, 80)
 # ---------------------------------------------------------------------------
 async def execute_0400_premarket_stabilization_plugin(
     context: Any,
@@ -878,18 +999,12 @@ async def execute_0400_premarket_stabilization_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    # MODIFIED [Case 66, Case 73, Case 74, Case 76, Case 77 & Case 79]:
+    # MODIFIED [Case 66, Case 73, Case 74, Case 76, Case 77, Case 79 & Case 80]:
     🔹 04:00 ~ 04:06 EST:
-    1) [Case 66 & Case 79] 데이마켓(20:00 ~ 03:59 EST) 막판에 체결된 익절 매도 주문(sell_order_id)이나
-       미결 매수 주문(buy_order_id)이 존재하면 취소 전에 먼저 sync_pending_sell_order_plugin / sync_pending_buy_order_plugin 을
-       최우선 호출하여 데이마켓 익절 수익 정산이 단 1건도 누락되지 않도록 보장한다.
-    2) 새 영업일 프리장 개장 시점에 rollover_daily_counters_if_needed(today_str) 를 호출하고,
-       당일 시드보호 패스(daily_seed_protect_pass_cnt=0) · 당일 스텝업 해금(daily_unlock_buy_events=0) ·
-       당일 예비시드 수혈(daily_reserve_injected_cnt=0) · 당일 자투리 차단(daily_dust_guard_blocked_cnt=0) ·
-       10분 매수 버킷(last_evaluated_buy_bucket_id=-1) · 1층 공석 재장전 타임쉴드(last_reentry_eval_ts=0.0) 및
-       장외 거래제한 쿨다운을 확실히 리셋한다 (단, 시드고갈 입금 요청 알림 스팸 방지 래치 waiting_reserve_deposit_alert_sent 는 그대로 보존!).
-    3) 하루에 1회 전일 미체결 잔류 주문을 청소하고 오버나이트 이월된 SOXL 지층(1층 ~ 7층)과
-       가용 현금 시드(free_cash_usd)를 토스 실계좌와 대조 동기화한다.
+    1) 데이마켓 막판 체결분 선행 정산 후 잔류 미체결 주문을 취소한다.
+    2) 일일 카운터(시드보호패스 · 스텝업해금 · 황금시간 전액매수/포켓익절 · 예비수혈 · 자투리차단)를 0회로 리셋한다
+       (단, waiting_reserve_deposit_alert_sent 단 1회 입금 알림 래치는 보존).
+    3) 오버나이트 이월 SOXL 1 ~ 7층 지층 및 golden_pocket 을 실계좌와 대조 동기화한다.
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     today_str = dt_now.strftime("%Y-%m-%d")
@@ -954,11 +1069,14 @@ async def execute_0400_premarket_stabilization_plugin(
         target_sell_price=0.0,
         pending_sell_mode="",
         pending_sell_indices=[],
+        pending_sell_pocket_qty=0,
         pending_lot_type="",
         pending_step_up_min_price=0.0,
-        # [Case 73, Case 74, Case 76 & Case 77]: 04:00 EST 오프닝 시 일일 카운터 0회 리셋 및 버킷/재장전 쉴드 초기화 직결
         daily_seed_protect_pass_cnt=0,
         daily_unlock_buy_events=0,
+        daily_golden_allin_buy_events=0,
+        daily_golden_pocket_sell_cnt=0,
+        daily_golden_realized_net_usd=0.0,
         daily_reserve_injected_cnt=0,
         daily_dust_guard_blocked_cnt=0,
         last_evaluated_buy_bucket_id=-1,
@@ -976,7 +1094,7 @@ async def execute_0400_premarket_stabilization_plugin(
     )
 
     logger.info(
-        "🌅 [04:00 EST 프리장 오프닝 안정화 완료] 당일 패스/해금/예비수혈 0회 리셋 · 잔류주문 취소=%d건 · 7층그리드동기화=%s",
+        "🌅 [04:00 EST 프리장 오프닝 안정화 완료] 당일 패스/해금/골든/예비수혈 0회 리셋 · 잔류주문 취소=%d건 · 7층그리드동기화=%s",
         canceled_cnt,
         sync_res.get("status"),
     )
@@ -988,7 +1106,7 @@ async def execute_0400_premarket_stabilization_plugin(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 3] 16:00 ~ 16:59 EST 정규장 마감 일일 결산 보고 & 애프터마켓 익절 감시 무중단 직결 (Case 66, 68, 72, 74, 76, 77, 79)
+# [핵심 3] 16:00 ~ 16:59 EST 정규장 마감 일일 결산 보고 & 애프터마켓 익절 감시 무중단 직결 (Case 66 ~ 80)
 # ---------------------------------------------------------------------------
 async def execute_1600_daily_closing_settlement_plugin(
     context: Any,
@@ -997,16 +1115,11 @@ async def execute_1600_daily_closing_settlement_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    # MODIFIED [Case 66, Case 68, Case 72, Case 74, Case 76, Case 77 & Case 79]:
+    # MODIFIED [Case 66, Case 68, Case 72, Case 74, Case 76, Case 77, Case 79 & Case 80]:
     🔹 16:00 ~ 16:59 EST:
-    1) 정규장 마감 시점에 미결 매수(buy_order_id) 또는 미결 매도(sell_order_id) 주문이 존재하면
-       취소 전에 먼저 sync_pending_buy_order_plugin / sync_pending_sell_order_plugin 을 선행 호출하여
-       15:59:59 EST 막판 체결분을 100% 정산 반영한다(Case 66).
-    2) 보유 지층(1층 ~ 7층)을 강제 손절(MOC)하지 않고 100% 오버나이트 안전 보존하며,
-       미체결 잔류 정규장 주문을 정리하고 당일 결산 보고를 단 1회 발송함과 동시에
-       ledger_backups/ 에 당일 마감 스냅샷을 백업한다.
-    3) [Case 79] 결산 직후 애프터마켓(16:00 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST)
-       ⚡1.5초 실시간 익절 매도 모니터가 무중단으로 즉시 이어진다!
+    1) 정규장 마감 미결 주문 선행 정산 후 잔류 정규장 주문을 정리한다.
+    2) 보유 지층(1층 ~ 7층 및 golden_pocket)을 100% 오버나이트 안전 보존하며 당일 결산 보고를 단 1회 발송한다.
+    3) 결산 직후 애프터마켓 및 데이마켓 ⚡1.5초 실시간 익절 매도 모니터가 무중단으로 이어진다!
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     hm = dt_now.hour * 100 + dt_now.minute
@@ -1049,6 +1162,7 @@ async def execute_1600_daily_closing_settlement_plugin(
         target_sell_price=0.0,
         pending_sell_mode="",
         pending_sell_indices=[],
+        pending_sell_pocket_qty=0,
         pending_lot_type="",
         pending_step_up_min_price=0.0,
         last_closing_report_date=today_str,
@@ -1085,11 +1199,14 @@ async def execute_1600_daily_closing_settlement_plugin(
     cum_roi = safe_float(summary.get("realized_roi_pct"), 0.0)
     free_cash = safe_float(summary.get("free_cash_usd"), 0.0)
     held_sh = safe_int(summary.get("held_shares"), 0)
+    gp_sh = safe_int(summary.get("golden_pocket_qty"), 0)
     held_tiers = safe_int(summary.get("held_tiers"), 0)
     held_lots = safe_int(summary.get("held_lots"), 0)
     day_buy_ev = safe_int(updated_st.get("daily_buy_events"), 0)
     day_unlock_ev = safe_int(updated_st.get("daily_unlock_buy_events"), 0)
     cum_unlock_ev = safe_int(updated_st.get("cond_unlock_buy_events"), 0)
+    day_g_buy = safe_int(updated_st.get("daily_golden_allin_buy_events"), 0)
+    day_g_sell = safe_int(updated_st.get("daily_golden_pocket_sell_cnt"), 0)
     day_res_inj = safe_int(updated_st.get("daily_reserve_injected_cnt"), 0)
     used_res_cnt = safe_int(summary.get("used_reserve_portions_cnt"), 0)
     inj_res_usd = safe_float(summary.get("injected_reserve_usd"), 0.0)
@@ -1107,6 +1224,12 @@ async def execute_1600_daily_closing_settlement_plugin(
             if (day_unlock_ev > 0 or cum_unlock_ev > 0)
             else ""
         )
+        golden_note = (
+            f" · 🌟골든전액 매수 {day_g_buy}회/익절 {day_g_sell}회"
+            if (day_g_buy > 0 or day_g_sell > 0)
+            else ""
+        )
+        gp_carry_note = f"+골든포켓 {gp_sh}주" if gp_sh > 0 else ""
         res_note = (
             f" · 💉예비수혈: 당일 +{day_res_inj}회분(사용 {used_res_cnt}/{MAX_RESERVE_PORTIONS}회분·${inj_res_usd:,.2f})"
             if (day_res_inj > 0 or used_res_cnt > 0)
@@ -1118,15 +1241,15 @@ async def execute_1600_daily_closing_settlement_plugin(
                 f"당일 세후실현: {d_sign}${abs(day_net):,.2f} ({d_sign}{abs(day_krw):,.0f}원) "
                 f"· 누적실현: {c_sign}${abs(cum_net):,.2f} ({c_sign}{abs(cum_roi):.2f}%) "
                 f"· 당일 매수 {day_buy_ev}회{unlock_note} / 익절 {day_sell_ev}회(2~7층이평졸업 {day_wma_grad}회·개별층 {day_indiv_sell}회)"
-                f"{res_note} "
+                f"{golden_note}{res_note} "
                 f"· 🛡️시드패스 {day_pass:,}회 / 자투리절약 +${day_saved:,.2f} "
-                f"· 오버나이트 이월: {held_sh}주({held_tiers}개층·{held_lots}회차) · 가용현금 ${free_cash:,.2f} "
+                f"· 오버나이트 이월: {held_sh}주({held_tiers}개층·{held_lots}회차{gp_carry_note}) · 가용현금 ${free_cash:,.2f} "
                 f"(🌇애프터·🌃데이장 ⚡1.5s 익절감시 연속가동 · 매수잠금)"
             ),
         )
 
     logger.info(
-        "🌙 [16:00 EST 일일 결산 완료 · %s] 당일실현=$%.2f · 누적실현=$%.2f · 예비수혈=%d/%d회분 · 오버나이트보유=%d주(%d개층·%d회차) -> 애프터/데이장 익절감시 직결",
+        "🌙 [16:00 EST 일일 결산 완료 · %s] 당일실현=$%.2f · 누적실현=$%.2f · 예비수혈=%d/%d회분 · 오버나이트보유=%d주(%d개층·포켓 %d주) -> 애프터/데이장 익절감시 직결",
         folder_slug,
         day_net,
         cum_net,
@@ -1134,7 +1257,7 @@ async def execute_1600_daily_closing_settlement_plugin(
         MAX_RESERVE_PORTIONS,
         held_sh,
         held_tiers,
-        held_lots,
+        gp_sh,
     )
     return {
         "status": "DAILY_CLOSING_SETTLEMENT_DONE",
@@ -1142,26 +1265,26 @@ async def execute_1600_daily_closing_settlement_plugin(
         "daily_realized_net_usd": day_net,
         "cumulative_realized_net_usd": cum_net,
         "held_shares": held_sh,
+        "pocket_shares": gp_sh,
         "held_tiers": held_tiers,
     }
 
 
 # ---------------------------------------------------------------------------
-# [핵심 4] 17:00 EST 일일 가비지 컬렉션(GC) · 일일 카운터 롤오버 · 날짜별 원장 백업 (Case 22, 68, 74, 76, 77, 79)
+# [핵심 4] 17:00 EST 일일 가비지 컬렉션(GC) · 일일 카운터 롤오버 · 날짜별 원장 백업 (Case 22, 68, 74, 76, 77, 79, 80)
 # ---------------------------------------------------------------------------
 async def execute_daily_1700_gc_and_backup_plugin(
     context: Any,
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    🔹 17:00 EST (Case 22, Case 68, Case 74, Case 76, Case 77 & Case 79):
+    🔹 17:00 EST (Case 22, Case 68, Case 74, Case 76, Case 77, Case 79 & Case 80):
     1) 롤오버 직전 당일 원장 상태를 `ledger_backups/soxl_stratum_ledger_<folder_slug>_YYYY-MM-DD.json` 에
        날짜별 물리적 스냅샷으로 백업(최근 14일분 유지)한다.
     2) 원장 일일 카운터(daily_seed_protect_pass_cnt=0, daily_unlock_buy_events=0,
+       daily_golden_allin_buy_events=0, daily_golden_pocket_sell_cnt=0, daily_golden_realized_net_usd=0.0,
        daily_reserve_injected_cnt=0, daily_dust_guard_blocked_cnt=0, last_reentry_eval_ts=0.0 등)를
        새 거래일 기준으로 확실히 리셋하고 가비지 컬렉션(gc.collect)을 수행한다.
-       - 단, waiting_reserve_deposit_alert_sent 단 1회 입금 알림 래치 및
-         현재 애프터마켓(16:00 ~ 19:59 EST)에서 대기 중인 매도 주문(sell_order_id)은 절대 건드리지 않고 보존한다!
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     logical_date = dt_now.strftime("%Y-%m-%d")
@@ -1178,11 +1301,13 @@ async def execute_daily_1700_gc_and_backup_plugin(
     mark_reentry_monitor_60s_cycle_shield(
         context=context, symbol=TARGET_SYMBOL, clear_shield=True
     )
-    # [Case 73, Case 74, Case 76, Case 77 & Case 79]: 17:00 EST 시점에 일일 매수/패스 카운터 0회 리셋 (애프터장 미결 매도 주문은 보존)
     await context.ledger.update_state(
         TARGET_SYMBOL,
         daily_seed_protect_pass_cnt=0,
         daily_unlock_buy_events=0,
+        daily_golden_allin_buy_events=0,
+        daily_golden_pocket_sell_cnt=0,
+        daily_golden_realized_net_usd=0.0,
         daily_reserve_injected_cnt=0,
         daily_dust_guard_blocked_cnt=0,
         pending_step_up_min_price=0.0,

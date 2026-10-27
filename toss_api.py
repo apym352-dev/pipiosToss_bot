@@ -2,10 +2,11 @@
 """
 # MODIFIED: toss_api.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 토스증권 Open API (v1.2.14) 방탄 통신 통제소 &
-SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 05)
+SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 및
+황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 03 / 10)
 - 제1헌법: 모든 파일 I/O 및 네트워크 통신의 asyncio.to_thread 비동기 격리 + GlobalThrottle 중앙 통제
 - 제2헌법: 기동 시 GET /api/v1/accounts 1회 호출로 BROKERAGE accountSeq 메모리 락온 및 X-Tossinvest-Account 자동 주입
-- 제3헌법 ~ 제6헌법 및 Case 01 ~ 78 전수 락온:
+- 제3헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온:
   1) REAL_ALLOWED_SYMBOLS = ("SOXL",) 단일 롱 화이트리스트 물리적 강제 (인버스 숏 SOXS 원천 차단)
   2) get_holdings_map_with_status, get_candles_1m, get_candles_1d, get_current_prices_batch,
      get_orderbook, get_buying_power_usd, get_sellable_quantity, create_order, modify_order,
@@ -37,6 +38,12 @@ SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 
        required_reserve_deposit_usd, last_reserve_check_ts 원장 영속화 및 회계 항등식 확장
   10) 🚨 [Case 78 : 지정가 부분 체결 후 미체결 잔량(l1_target_quota_qty) 보존 및 1.5초 모니터 기반 잔량(TOPUP_1FL) 지정가 60초 대기 완수]
       - l1_target_quota_qty 원장 영속화 및 0주 졸업 / 1층 익절 공석 전환 시 자동 클리어 정규화 탑재
+  11) 🚨 [NEW · Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용현금 100% 전액 추가매수 &
+      독립 골든포켓(golden_pocket) 분리회계 & 전술 제어반(/settlement) 3대 모드 선택기(기본값 "NONE" [OFF]) 탑재]
+      - DEFAULT_GOLDEN_ALLIN_MODE = "NONE" (사용자 선택 기본값 OFF 락온), GOLDEN_ALLIN_MODES = ("NONE", "POCKET_ALLIN", "GRID_L1_ALLIN")
+      - golden_allin_mode, golden_pocket, last_golden_allin_date, pending_sell_pocket_qty,
+        golden_allin_buy_events, daily_golden_allin_buy_events, golden_pocket_sell_cnt, daily_golden_pocket_sell_cnt,
+        golden_realized_net_usd, daily_golden_realized_net_usd 원장 영속화 및 cycle_golden_allin_mode() 탑재
 """
 
 from __future__ import annotations
@@ -63,7 +70,7 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("toss_sniper.toss_api")
 
 # ---------------------------------------------------------------------------
-# [핵심 상수] 제4헌법 EST 단일 타임존 & 최종 확정 진화 챔피언 (💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · Case 72 ~ 78) 전역 상수
+# [핵심 상수] 제4헌법 EST 단일 타임존 & 최종 확정 진화 챔피언 (Case 72 ~ 80) 전역 상수
 # ---------------------------------------------------------------------------
 EST_TZ = ZoneInfo("America/New_York")
 KST_TZ = ZoneInfo("Asia/Seoul")
@@ -94,6 +101,19 @@ MAX_RESERVE_PORTIONS: int = 6
 MIN_DIP_BUDGET_RATIO: float = 0.30
 MIN_DIP_VS_L1_RATIO: float = 0.30
 RESERVE_DEPOSIT_TOLERANCE_RATIO: float = 0.95
+
+# NEW [Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용시드 100% 전액 추가매수 상수]
+# 사용자 지시에 따라 기본값은 반드시 "NONE" (OFF) 으로 락온!
+GOLDEN_ALLIN_MODES: Tuple[str, ...] = (
+    "NONE",
+    "POCKET_ALLIN",
+    "GRID_L1_ALLIN",
+)
+DEFAULT_GOLDEN_ALLIN_MODE: str = "NONE"
+GOLDEN_WINDOW_START_HM: int = 700
+GOLDEN_WINDOW_END_HM: int = 750
+GOLDEN_RSI_MAX_THRESHOLD: float = 19.0
+GOLDEN_POCKET_RISE_PCT: float = 1.50
 
 LOCKED_BUY_INTERVAL_MIN: int = 10
 LOCKED_SELL_INTERVAL_MIN: int = 1
@@ -451,23 +471,24 @@ class GlobalThrottle:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] SOXL 단일 롱 7-Tier 순수 멀티 그리드 폴더별 3중 안전 지층 원장 (SoxlStratumLedger — Case 68 ~ 78)
+# [핵심 2] SOXL 단일 롱 7-Tier 순수 멀티 그리드 및 골든포켓 폴더별 3중 안전 지층 원장 (SoxlStratumLedger — Case 68 ~ 80)
 # ---------------------------------------------------------------------------
 class SoxlStratumLedger:
     """
-    🎯 1 ~ 🎯 5 & Case 02, 05, 06, 58 ~ 78:
+    🎯 1 ~ 🎯 5 & Case 02, 05, 06, 58 ~ 80:
     현재 봇이 위치한 폴더(`base_dir`)를 기준으로:
     ① 폴더 고유 원장(`soxl_stratum_ledger_<folder_slug>.json` — Git 덮어쓰기 100% 면역)
     ② 표준 호환 원장(`soxl_stratum_ledger.json` — 기존 코드 및 외부 도구 호환 미러)
     ③ 실시간 백업 금고(`ledger_backups/soxl_stratum_ledger_<folder_slug>.bak.json`)
     3곳에 SOXL 1 ~ 7층 순수 멀티 그리드 지층(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대),
-    가용 현금 시드(free_cash_usd), 정적 잠금/조건부 스텝업 사이클 최저 매수가(cycle_min_buy_price),
-    STEP2X_15PCT_C20 스텝업 해금 대기 가격(pending_step_up_min_price) 및 해금 횟수(cond_unlock_buy_events),
-    💉 05_RESV_6P_GUARD30 예비시드 수혈 잔액(injected_reserve_usd) · 사용 회분(used_reserve_portions_cnt) ·
-    시드고갈 입금 대기 플래그(waiting_reserve_deposit) · 단 1회 입금 알림 영구 래치(waiting_reserve_deposit_alert_sent),
-    🎯 Case 78 현재 1층 목표 정량 주수(l1_target_quota_qty — 부분 체결 시 미체결 잔량 계산 및 1.5초 모니터 재대기용),
-    양방향·주기 60초 타임쉴드 시각(last_buy_fill_ts, last_sell_fill_ts, last_cycle_end_ts, last_sell_gate_eval_ts, last_reentry_eval_ts),
-    다중 그리드 매도 대기 인덱스(pending_sell_indices), 기정산 주문 ID 링버퍼(last_settled_order_ids),
+    황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 선택 모드(`golden_allin_mode`, 기본값 `"NONE"` [OFF]) 및
+    독립 골든포켓(`golden_pocket`), 가용 현금 시드(`free_cash_usd`), 정적 잠금/조건부 스텝업 사이클 최저 매수가(`cycle_min_buy_price`),
+    STEP2X_15PCT_C20 스텝업 해금 대기 가격(`pending_step_up_min_price`) 및 해금 횟수(`cond_unlock_buy_events`),
+    💉 05_RESV_6P_GUARD30 예비시드 수혈 잔액(`injected_reserve_usd`) · 사용 회분(`used_reserve_portions_cnt`) ·
+    시드고갈 입금 대기 플래그(`waiting_reserve_deposit`) · 단 1회 입금 알림 영구 래치(`waiting_reserve_deposit_alert_sent`),
+    🎯 Case 78 현재 1층 목표 정량 주수(`l1_target_quota_qty` — 부분 체결 시 미체결 잔량 계산 및 1.5초 모니터 재대기용),
+    양방향·주기 60초 타임쉴드 시각(`last_buy_fill_ts`, `last_sell_fill_ts`, `last_cycle_end_ts`, `last_sell_gate_eval_ts`, `last_reentry_eval_ts`),
+    다중 그리드 및 골든포켓 매도 대기 정보(`pending_sell_indices`, `pending_sell_pocket_qty`), 기정산 주문 ID 링버퍼(`last_settled_order_ids`),
     누적 세후 실현수익금 및 자투리 절약금을 원자적(.tmp -> os.replace)으로 동시 영속화하되,
     Case 75 Dirty-Check 를 적용하여 변경이 없을 때는 불필요한 os.fsync() 디스크 쓰기를 스킵한다.
     """
@@ -520,6 +541,17 @@ class SoxlStratumLedger:
             if val > 100.0:
                 return round(val, 4)
         return DEFAULT_INITIAL_SEED_USD
+
+    @staticmethod
+    def _empty_golden_pocket_dict() -> Dict[str, Any]:
+        return {
+            "qty": 0,
+            "book_price": 0.0,
+            "book_invested_usd": 0.0,
+            "actual_cost_usd": 0.0,
+            "entry_ts": 0.0,
+            "order_date": "",
+        }
 
     @classmethod
     def _resolve_safe_initial_seed(
@@ -583,6 +615,10 @@ class SoxlStratumLedger:
             "reentry_mode": "HYBRID_PULL_OR_BRK",
             # Case 76: 🔓 06_STEP2X_15PCT_C20 조건부 스텝업 저가 해금 모드 락온
             "unlock_mode": DEFAULT_UNLOCK_MODE,
+            # NEW [Case 80]: 황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 전액매수 모드 (기본값 "NONE" [OFF])
+            "golden_allin_mode": DEFAULT_GOLDEN_ALLIN_MODE,
+            "golden_pocket": cls._empty_golden_pocket_dict(),
+            "last_golden_allin_date": "",
             "buy_interval_min": LOCKED_BUY_INTERVAL_MIN,
             "sell_interval_min": LOCKED_SELL_INTERVAL_MIN,
             # Case 72: 7-Layer (1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 기본값 락온
@@ -606,6 +642,8 @@ class SoxlStratumLedger:
             "pending_step_up_min_price": 0.0,
             "pending_sell_mode": "",
             "pending_sell_indices": [],
+            # NEW [Case 80]: 매도 주문 발주 중 포함된 독립 골든포켓 수량
+            "pending_sell_pocket_qty": 0,
             # 봇 자동 정산 완료된 orderId 링버퍼(최근 50개) — 수동 체결 역추적 시 중복 정산 방지
             "last_settled_order_ids": [],
             "last_modify_mono": 0.0,
@@ -639,6 +677,13 @@ class SoxlStratumLedger:
             # Case 76: STEP2X_15PCT_C20 조건부 스텝업 해금 매수 누적/당일 카운터
             "cond_unlock_buy_events": 0,
             "daily_unlock_buy_events": 0,
+            # NEW [Case 80]: 황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 전액매수 및 골든포켓 익절/수익 통계
+            "golden_allin_buy_events": 0,
+            "daily_golden_allin_buy_events": 0,
+            "golden_pocket_sell_cnt": 0,
+            "daily_golden_pocket_sell_cnt": 0,
+            "golden_realized_net_usd": 0.0,
+            "daily_golden_realized_net_usd": 0.0,
             "extra_13plus_buy_events": 0,
             "seed_protect_pass_cnt": 0,
             "daily_seed_protect_pass_cnt": 0,
@@ -724,29 +769,61 @@ class SoxlStratumLedger:
 
         return l1_list + relabeled_uppers
 
+    @classmethod
+    def _sanitize_golden_pocket_dict(
+        cls, raw_pocket: Any
+    ) -> Dict[str, Any]:
+        """
+        # NEW [Case 69, Case 71 & Case 80 : 독립 골든포켓(golden_pocket) 순수 실물 원가 정규화기]:
+        golden_pocket 의 qty > 0 일 때 book_price == actual_avg_price 및
+        book_invested_usd == actual_cost_usd 를 100% 일치시켜 원가 훼손을 원천 차단한다.
+        """
+        if not isinstance(raw_pocket, dict):
+            return cls._empty_golden_pocket_dict()
+        q = safe_int(raw_pocket.get("qty"), 0)
+        if q <= 0:
+            return cls._empty_golden_pocket_dict()
+        raw_p = safe_float(
+            raw_pocket.get("book_price"),
+            safe_float(raw_pocket.get("buy_price"), 0.0),
+        )
+        raw_bi = safe_float(
+            raw_pocket.get("book_invested_usd"), float(q) * max(0.0, raw_p)
+        )
+        ac = safe_float(raw_pocket.get("actual_cost_usd"), raw_bi)
+        if ac <= 0.0 and raw_p > 0.0:
+            ac = float(q) * raw_p
+        if ac <= 0.0:
+            return cls._empty_golden_pocket_dict()
+        clean_cost = round(max(0.01 * float(q), ac), 4)
+        pure_p = round(max(0.01, clean_cost / float(q)), 4)
+        return {
+            "qty": q,
+            "book_price": pure_p,
+            "book_invested_usd": clean_cost,
+            "actual_cost_usd": clean_cost,
+            "entry_ts": round(
+                max(0.0, safe_float(raw_pocket.get("entry_ts"), 0.0)), 4
+            ),
+            "order_date": str(raw_pocket.get("order_date") or "").strip(),
+        }
+
     def _sanitize_and_enforce_identity(
         self, raw_st: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        🚨 Case 63, Case 64, Case 68, Case 69, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77 & Case 78:
+        🚨 Case 63, Case 64, Case 68, Case 69, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77, Case 78 & Case 80:
         1) buy_interval_min = 10, sell_interval_min = 1, max_grid_tiers = 7 (MAX_GRID_TIERS_7),
-           portion_mode = "COMP_08PCT", threshold_mode = "WIDE_RUNWAY", unlock_mode = "STEP2X_15PCT_C20" 를 강제 동기화한다.
+           portion_mode = "COMP_08PCT", threshold_mode = "WIDE_RUNWAY", unlock_mode = "STEP2X_15PCT_C20" 를 강제 동기화하고,
+           golden_allin_mode 는 GOLDEN_ALLIN_MODES ("NONE", "POCKET_ALLIN", "GRID_L1_ALLIN") 중 하나로 검증한다(기본값 "NONE").
         2) 시드머니 결측 또는 0.0 유입 시 $100.0 으로 변조되지 않도록 _resolve_safe_initial_seed() 를 적용한다.
-        3) 🛡️ [Case 69, Case 71 & Case 72 순수 실물 원가 100% 보존 강제 (리앵커링 원가 차감 영구 폐기)]:
-           - 모든 보유 지층(1층 ~ 7층)의 장부 단가(book_price)와 장부 투자금(book_invested_usd)을
+        3) 🛡️ [Case 69, Case 71, Case 72 & Case 80 순수 실물 원가 100% 보존 강제 (리앵커링 원가 차감 영구 폐기)]:
+           - 모든 보유 지층(1층 ~ 7층) 및 독립 골든포켓(golden_pocket)의 장부 단가(book_price)와 장부 투자금(book_invested_usd)을
              순수 실물 매수 원가(actual_avg_price = ac / q, actual_cost_usd = ac)와 100% 일치시켜,
              리앵커링 차감이나 이동평균 희석으로 인한 조기 손절 착시를 물리적으로 원천 봉쇄한다!
-           - cycle_reanchor_credit_usd = 0.0 으로 항상 고정한다.
-        4) 🛡️ [Case 73, Case 76 & Case 78 1층 공석 재장전 타임쉴드(last_reentry_eval_ts) · 스텝업 대기값(pending_step_up_min_price) ·
-           1층 목표 정량(l1_target_quota_qty) 정규화]:
-           - 보유 지층이 0주이거나 이미 활성 1층 공격수가 존재하는 상태(has_active_l1 == True)이면
-             last_reentry_eval_ts = 0.0 으로 클리어하고, 1층이 공석인 상태에서만 타임스탬프를 보존한다.
-           - 미결 매수 주문(buy_order_id)이 없거나 0주 상태이면 pending_step_up_min_price = 0.0 으로 클리어한다.
-           - [Case 78]: 0주 상태이거나 1층이 익절되어 공석(not has_active_l1)이고 미결 매수 주문이 없을 때는
-             l1_target_quota_qty = 0 으로 자동 클리어하며, 활성 1층이 존재할 때는 max(cur_l1_qty, l1_target_quota_qty)로 보존하여
-             부분 체결(cur_l1_qty < l1_target_quota_qty) 시 미체결 잔량을 정확히 추적한다!
-        5) 💉 [Case 77 온디맨드 예비시드 수혈 잔액(injected_reserve_usd) · 단 1회 알림 영구 래치 및 회계 항등식 확장]:
-           - 회계 항등식: free_cash_usd = round(max(0.0, (init_seed + cum_net + injected_reserve_usd) - actual_inv), 4) 를 정밀 유지한다.
+        4) 🛡️ [Case 73, Case 76, Case 78 & Case 80 타임쉴드 · 스텝업 대기값 · 1층 목표 정량 · 골든포켓 매도수량 정규화]
+        5) 💉 [Case 77 & Case 80 온디맨드 예비시드 수혈 잔액(injected_reserve_usd) · 골든포켓 투입원금 통합 회계 항등식]:
+           - 회계 항등식: free_cash_usd = round(max(0.0, (init_seed + cum_net + injected_reserve_usd) - (actual_inv_buckets + pocket_cost)), 4) 를 정밀 유지한다.
         """
         st = self._default_symbol_state(
             folder_slug=self.folder_slug,
@@ -770,6 +847,46 @@ class SoxlStratumLedger:
         )
         st["daily_unlock_buy_events"] = max(
             0, safe_int(st.get("daily_unlock_buy_events"), 0)
+        )
+
+        # NEW [Case 80]: 황금시간대 전액매수 모드 검증 (기본값 "NONE" [OFF]) 및 통계 정규화
+        raw_g_mode = (
+            str(st.get("golden_allin_mode") or DEFAULT_GOLDEN_ALLIN_MODE)
+            .upper()
+            .strip()
+        )
+        if raw_g_mode not in GOLDEN_ALLIN_MODES:
+            raw_g_mode = DEFAULT_GOLDEN_ALLIN_MODE
+        st["golden_allin_mode"] = raw_g_mode
+        st["last_golden_allin_date"] = str(
+            st.get("last_golden_allin_date") or ""
+        ).strip()
+        st["golden_allin_buy_events"] = max(
+            0, safe_int(st.get("golden_allin_buy_events"), 0)
+        )
+        st["daily_golden_allin_buy_events"] = max(
+            0, safe_int(st.get("daily_golden_allin_buy_events"), 0)
+        )
+        st["golden_pocket_sell_cnt"] = max(
+            0, safe_int(st.get("golden_pocket_sell_cnt"), 0)
+        )
+        st["daily_golden_pocket_sell_cnt"] = max(
+            0, safe_int(st.get("daily_golden_pocket_sell_cnt"), 0)
+        )
+        st["golden_realized_net_usd"] = round(
+            safe_float(st.get("golden_realized_net_usd"), 0.0), 4
+        )
+        st["daily_golden_realized_net_usd"] = round(
+            safe_float(st.get("daily_golden_realized_net_usd"), 0.0), 4
+        )
+
+        clean_pocket = self._sanitize_golden_pocket_dict(
+            st.get("golden_pocket")
+        )
+        st["golden_pocket"] = clean_pocket
+        pocket_qty = safe_int(clean_pocket.get("qty"), 0)
+        pocket_cost = round(
+            safe_float(clean_pocket.get("actual_cost_usd"), 0.0), 4
         )
 
         # Case 77: 예비시드 수혈·상환·자투리차단 카운터 및 단 1회 입금 알림 래치 정규화
@@ -882,7 +999,22 @@ class SoxlStratumLedger:
             st["last_settled_order_ids"] = []
 
         has_pending_buy = bool(str(st.get("buy_order_id") or "").strip())
+        has_pending_sell = bool(str(st.get("sell_order_id") or "").strip())
         raw_target_q = max(0, safe_int(st.get("l1_target_quota_qty"), 0))
+        pending_lot_tag = (
+            str(st.get("pending_lot_type") or "").upper().strip()
+        )
+
+        if pocket_qty > 0 and has_pending_sell:
+            st["pending_sell_pocket_qty"] = max(
+                0,
+                min(
+                    pocket_qty,
+                    safe_int(st.get("pending_sell_pocket_qty"), 0),
+                ),
+            )
+        else:
+            st["pending_sell_pocket_qty"] = 0
 
         if not clean_buckets:
             st["last_sell_gate_eval_ts"] = 0.0
@@ -890,8 +1022,12 @@ class SoxlStratumLedger:
             st["last_reentry_eval_ts"] = 0.0
             st["pending_sell_indices"] = []
             st["pending_step_up_min_price"] = 0.0
-            # [Case 78]: 0주 상태에서 미결 매수가 없으면 l1_target_quota_qty 를 0 으로 클리어
-            st["l1_target_quota_qty"] = raw_target_q if has_pending_buy else 0
+            # [Case 78 & Case 80]: 그리드 0주 상태에서 미결 그리드 매수가 없으면 l1_target_quota_qty 를 0 으로 클리어
+            st["l1_target_quota_qty"] = (
+                raw_target_q
+                if (has_pending_buy and pending_lot_tag != "GOLDEN_POCKET")
+                else 0
+            )
         else:
             st["last_sell_gate_eval_ts"] = round(
                 max(0.0, safe_float(st.get("last_sell_gate_eval_ts"), 0.0)), 4
@@ -909,9 +1045,11 @@ class SoxlStratumLedger:
                     max(0.0, safe_float(st.get("last_reentry_eval_ts"), 0.0)),
                     4,
                 )
-                # 1층이 익절되어 공석(상단 2~7층만 보유)이고 미결 매수가 없으면 l1_target_quota_qty 를 0 으로 클리어
+                # 1층이 익절되어 공석(상단 2~7층만 보유)이고 미결 그리드 매수가 없으면 l1_target_quota_qty 를 0 으로 클리어
                 st["l1_target_quota_qty"] = (
-                    raw_target_q if has_pending_buy else 0
+                    raw_target_q
+                    if (has_pending_buy and pending_lot_tag != "GOLDEN_POCKET")
+                    else 0
                 )
 
             if has_pending_buy:
@@ -938,15 +1076,18 @@ class SoxlStratumLedger:
             else:
                 st["pending_sell_indices"] = []
 
-        actual_inv = round(
+        actual_inv_buckets = round(
             sum(safe_float(b["actual_cost_usd"], 0.0) for b in clean_buckets),
             4,
         )
-        # Case 77 회계 항등식 확장:
-        # 가용현금(free_cash_usd) = max(0.0, (초기시드 + 누적세후실현순익 + 온디맨드 예비시드 수혈잔액) - 보유지층 실투입원금 합계)
+        actual_inv_total = round(actual_inv_buckets + pocket_cost, 4)
+        # Case 77 & Case 80 회계 항등식 확장:
+        # 가용현금(free_cash_usd) = max(0.0, (초기시드 + 누적세후실현순익 + 온디맨드 예비시드 수혈잔액) - (보유지층 원금 합계 + 골든포켓 원금))
         realized_equity = max(0.0, init_seed + cum_net)
         total_pool_equity = realized_equity + inj_res_usd
-        st["free_cash_usd"] = round(max(0.0, total_pool_equity - actual_inv), 4)
+        st["free_cash_usd"] = round(
+            max(0.0, total_pool_equity - actual_inv_total), 4
+        )
 
         if not st["waiting_reserve_deposit"]:
             st["required_reserve_deposit_usd"] = 0.0
@@ -972,7 +1113,7 @@ class SoxlStratumLedger:
         """
         # [Case 75 : 원장 Dirty-Check 비교기]:
         두 원장 상태 딕셔너리에서 매 호출마다 바뀌는 타임스탬프("updated_at")만 제외하고
-        나머지 모든 실질 필드(buckets, free_cash_usd, 주문 ID, 타임쉴드 시각, 카운터 등)가
+        나머지 모든 실질 필드(buckets, golden_pocket, free_cash_usd, 주문 ID, 타임쉴드 시각, 카운터 등)가
         100% 동일한지 판별한다.
         """
         if not isinstance(st_a, dict) or not isinstance(st_b, dict):
@@ -986,16 +1127,21 @@ class SoxlStratumLedger:
         st: Dict[str, Any],
     ) -> Tuple[int, int, int, float, str]:
         """
-        🚨 Case 68 & Case 77 [다중 원장 상태 비교 자가 치유 스코어링]:
+        🚨 Case 68, Case 77 & Case 80 [다중 원장 상태 비교 자가 치유 스코어링]:
         폴더 내 3개 원장 후보(고유 원장 · 실시간 백업 금고 · 호환 원장) 중
         실수로 초기화된 빈 파일 대신 실제 매매 데이터를 보유한 최적 원장을 선택하기 위한 우선순위 튜플.
         """
         buckets = (
             st.get("buckets") if isinstance(st.get("buckets"), list) else []
         )
+        gp = (
+            st.get("golden_pocket")
+            if isinstance(st.get("golden_pocket"), dict)
+            else {}
+        )
         total_qty = sum(
             safe_int(b.get("qty"), 0) for b in buckets if isinstance(b, dict)
-        )
+        ) + max(0, safe_int(gp.get("qty"), 0))
         has_pending_ord = bool(
             str(st.get("buy_order_id") or "").strip()
             or str(st.get("sell_order_id") or "").strip()
@@ -1006,6 +1152,7 @@ class SoxlStratumLedger:
             safe_int(st.get("total_buy_events"), 0)
             + safe_int(st.get("total_sell_events"), 0)
             + safe_int(st.get("cond_unlock_buy_events"), 0)
+            + safe_int(st.get("golden_allin_buy_events"), 0)
             + safe_int(st.get("total_reserve_injected_cnt"), 0)
             + safe_int(st.get("reanchor_cnt"), 0)
         )
@@ -1042,7 +1189,7 @@ class SoxlStratumLedger:
 
     def _load_sync(self) -> None:
         """
-        🚨 Case 68 & Case 75 [기존 soxl_stratum_ledger.json 100% 무손실 자동 이관 & 3중 금고 Dirty-Check 자가 치유]:
+        🚨 Case 68, Case 75 & Case 80 [기존 soxl_stratum_ledger.json 100% 무손실 자동 이관 & 3중 금고 Dirty-Check 자가 치유]:
         1) primary_filepath (`soxl_stratum_ledger_<폴더명>.json`)
         2) backup_filepath  (`ledger_backups/soxl_stratum_ledger_<폴더명>.bak.json`)
         3) legacy_filepath  (`soxl_stratum_ledger.json`)
@@ -1095,13 +1242,21 @@ class SoxlStratumLedger:
                         safe_int(b.get("qty"), 0)
                         for b in sanitized.get("buckets", [])
                     )
+                    gp_q = safe_int(
+                        (sanitized.get("golden_pocket") or {}).get("qty"), 0
+                    )
                     logger.info(
-                        "📂 [Case 68~78 폴더별 3중 7층 골디락스 그리드 원장 락온 완료] 폴더=[%s] · 채택소스=%s · 시드=$%.2f · 보유=%d주(%d개층) · 예비수혈=%d/%d회분($%.2f) · 고유원장=%s",
+                        "📂 [Case 68~80 폴더별 3중 7층 골디락스 그리드 원장 락온 완료] 폴더=[%s] · 채택소스=%s · 시드=$%.2f · 그리드=%d주(%d개층) · 골든포켓=%d주(모드=%s) · 예비수혈=%d/%d회분($%.2f) · 고유원장=%s",
                         self.folder_slug,
                         best_label,
                         safe_float(sanitized.get("initial_seed_usd"), 10000.0),
                         held_q,
                         len(sanitized.get("buckets", [])),
+                        gp_q,
+                        str(
+                            sanitized.get("golden_allin_mode")
+                            or DEFAULT_GOLDEN_ALLIN_MODE
+                        ),
                         safe_int(sanitized.get("used_reserve_portions_cnt"), 0),
                         MAX_RESERVE_PORTIONS,
                         safe_float(sanitized.get("injected_reserve_usd"), 0.0),
@@ -1262,8 +1417,8 @@ class SoxlStratumLedger:
 
     def recover_from_backup_vault_sync(self) -> Optional[Dict[str, Any]]:
         """
-        Case 68:
-        백업 금고(`backup_filepath` 또는 최신 일일 스냅샷)에서 유효한 지층(`buckets`)이나
+        Case 68 & Case 80:
+        백업 금고(`backup_filepath` 또는 최신 일일 스냅샷)에서 유효한 지층(`buckets` 또는 `golden_pocket`)이나
         시드/수익 데이터가 존재하면 읽어와 반환한다.
         """
         cand_paths = [self.backup_filepath, self.primary_filepath]
@@ -1280,11 +1435,22 @@ class SoxlStratumLedger:
             raw_d = self._load_candidate_file_sync(fp)
             if isinstance(raw_d, dict):
                 b_list = raw_d.get("buckets")
-                if isinstance(b_list, list) and sum(
-                    safe_int(b.get("qty"), 0)
-                    for b in b_list
-                    if isinstance(b, dict)
-                ) > 0:
+                gp_obj = (
+                    raw_d.get("golden_pocket")
+                    if isinstance(raw_d.get("golden_pocket"), dict)
+                    else {}
+                )
+                b_qty = (
+                    sum(
+                        safe_int(b.get("qty"), 0)
+                        for b in b_list
+                        if isinstance(b, dict)
+                    )
+                    if isinstance(b_list, list)
+                    else 0
+                )
+                gp_qty = max(0, safe_int(gp_obj.get("qty"), 0))
+                if (b_qty + gp_qty) > 0:
                     return self._sanitize_and_enforce_identity(raw_d)
         return None
 
@@ -1344,6 +1510,45 @@ class SoxlStratumLedger:
             self.update_state_sync, symbol, **kwargs
         )
 
+    async def cycle_golden_allin_mode(
+        self, target_mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        # NEW [Case 80 : 전술 제어반(/settlement) 황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 전액매수 모드 순환 선택기]:
+        - target_mode 가 지정되면 해당 모드로 즉시 설정하고,
+        - 미지정(인라인 버튼 클릭) 시 "NONE" (⚪ OFF) -> "POCKET_ALLIN" (🌟 독립 골든포켓 ON) ->
+          "GRID_L1_ALLIN" (🔥 7층 그리드 1층편입 ON) -> "NONE" (⚪ OFF) 순서로 순환 전환한다.
+        """
+        st = self.get_state(TARGET_SYMBOL)
+        cur_m = (
+            str(st.get("golden_allin_mode") or DEFAULT_GOLDEN_ALLIN_MODE)
+            .upper()
+            .strip()
+        )
+        if target_mode is not None:
+            req_m = str(target_mode).upper().strip()
+            if req_m in ("OFF", "NONE", "0", "FALSE"):
+                next_m = "NONE"
+            elif req_m in ("POCKET", "POCKET_ALLIN", "1"):
+                next_m = "POCKET_ALLIN"
+            elif req_m in ("GRID", "GRID_L1", "GRID_L1_ALLIN", "2"):
+                next_m = "GRID_L1_ALLIN"
+            elif req_m in GOLDEN_ALLIN_MODES:
+                next_m = req_m
+            else:
+                next_m = DEFAULT_GOLDEN_ALLIN_MODE
+        else:
+            try:
+                cur_idx = GOLDEN_ALLIN_MODES.index(cur_m)
+                next_m = GOLDEN_ALLIN_MODES[
+                    (cur_idx + 1) % len(GOLDEN_ALLIN_MODES)
+                ]
+            except ValueError:
+                next_m = "POCKET_ALLIN"
+        return await self.update_state(
+            TARGET_SYMBOL, golden_allin_mode=next_m
+        )
+
     async def reset_stratum_only(
         self,
         symbol: str = TARGET_SYMBOL,
@@ -1351,12 +1556,11 @@ class SoxlStratumLedger:
         preserve_realized_profit: bool = True,
     ) -> Dict[str, Any]:
         """
-        🚨 Case 02, Case 65, Case 69, Case 70, Case 71, Case 72, Case 73, Case 76, Case 77 & Case 78:
+        🚨 Case 02, Case 65, Case 69, Case 70, Case 71, Case 72, Case 73, Case 76, Case 77, Case 78 & Case 80:
         하위 호환용 지층 초기화 메서드 (텔레그램 메뉴/명령어에서는 /reset_profit 으로 대체됨):
-        지층 큐(buckets), 기준가, 기억된 최저가, 리앵커링 크레딧, 1층 목표 정량(l1_target_quota_qty),
-        다중 그리드 매도 대기 인덱스(pending_sell_indices), 스텝업 대기 기준가(pending_step_up_min_price),
-        예비시드 수혈 잔액 및 입금 대기 상태, 매도 모니터 검문 시각(last_sell_gate_eval_ts),
-        1층 공석 재장전 시각(last_reentry_eval_ts), 미체결 주문 ID를 원자적으로 0점 초기화하고,
+        지층 큐(buckets), 독립 골든포켓(golden_pocket), 기준가, 기억된 최저가, 리앵커링 크레딧,
+        1층 목표 정량(l1_target_quota_qty), 다중 그리드/포켓 매도 대기 정보, 스텝업 대기 기준가,
+        예비시드 수혈 잔액 및 입금 대기 상태, 타임쉴드 시각, 미체결 주문 ID를 원자적으로 0점 초기화하고,
         0주 싸이클 종료 타임쉴드(last_sell_fill_ts, last_cycle_end_ts)를 각인한다.
         """
         sym = self._assert_allowed_symbol(symbol)
@@ -1378,6 +1582,7 @@ class SoxlStratumLedger:
             initial_seed_usd=round(init_seed, 4),
             cumulative_realized_net_usd=round(cum_net, 4),
             buckets=[],
+            golden_pocket=self._empty_golden_pocket_dict(),
             anchor_price=0.0,
             cycle_min_buy_price=0.0,
             ratchet_anchor_price=0.0,
@@ -1404,6 +1609,7 @@ class SoxlStratumLedger:
             pending_step_up_min_price=0.0,
             pending_sell_mode="",
             pending_sell_indices=[],
+            pending_sell_pocket_qty=0,
             last_evaluated_buy_bucket_id=-1,
         )
 
@@ -1436,7 +1642,7 @@ class SoxlStratumLedger:
         self, logical_date: str
     ) -> Dict[str, Any]:
         """
-        # [Case 74, Case 76 & Case 77]:
+        # [Case 74, Case 76, Case 77 & Case 80]:
         일일 카운터를 새 영업일 기준으로 0회 롤오버하되,
         시드고갈 입금 요청 알림 스팸 방지 래치(`waiting_reserve_deposit_alert_sent`)는
         일일 롤오버 시에도 절대 해제하지 않고 그대로 유지하여 날짜 변경 시 중복 알림 발송을 원천 차단한다!
@@ -1450,6 +1656,9 @@ class SoxlStratumLedger:
             logical_date=str(logical_date),
             daily_buy_events=0,
             daily_unlock_buy_events=0,
+            daily_golden_allin_buy_events=0,
+            daily_golden_pocket_sell_cnt=0,
+            daily_golden_realized_net_usd=0.0,
             daily_reserve_injected_cnt=0,
             daily_dust_guard_blocked_cnt=0,
             daily_sell_events=0,
@@ -1714,7 +1923,6 @@ class TossApiClient:
         🚨 제1헌법, 제2헌법 & Case 20, 21:
         모든 토스 Open API 요청을 처리하는 중앙 비동기 디스패처.
         """
-        # MODIFIED: 여는 큰따옴표(") 누락 오타 완벽 복구
         clean_path = path if path.startswith("/") else f"/{path}"
         url = f"{self.base_url}{clean_path}"
         if params:
@@ -2317,7 +2525,7 @@ class TossApiClient:
         enforce_daymarket_block: bool = False,
     ) -> Dict[str, Any]:
         """
-        🎯 5 & 제5헌법 & Case 09, 18:
+        🎯 5 & 제5헌법 & Case 09, 18, 79:
         POST /api/v1/orders (오직 SOXL LIMIT 지정가 주문만 허용)
         """
         sym = self._assert_real_order_symbol(symbol)

@@ -3,7 +3,7 @@
 # MODIFIED: tg_ui_plugin.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
-텔레그램 관제탑 사용자 중심 초슬림 UI 렌더러 및 명령어·콜백 비동기 컨트롤러 코어 모듈 (Step 05 / 06)
+텔레그램 관제탑 사용자 중심 초슬림 UI 렌더러 및 명령어·콜백 비동기 컨트롤러 코어 모듈 (Step 09 / 10)
 - 제1헌법: 모든 텔레그램 HTTP API 호출을 asyncio.to_thread 로 비동기 격리 및 타임아웃 적용
 - 제4헌법: 모든 논리 시계열은 미국 동부 시간(EST/EDT) 100% 락온
 - Case 11 & Case 62:
@@ -14,22 +14,20 @@
      이미 최신 코드(changed == False)일 때는 재기동 없이 무중단 가동 유지!
 - Case 15 & Case 16: 사용자 중심 초슬림 모바일 가독성 최적화, 문단 하단 2중 중복 인라인 네비게이션 버튼 전면 제거
   (하단 고정 키보드 단일 유지), 기동 완료 시 "✅ 서버가 정상 작동 중입니다." 단일 라인 타전
-- Case 02 & Case 64:
-  1) 전술 제어반(/settlement) 내 30분 옵션 및 중복 네비게이션 버튼 완전 제거 -> 오직 [작동 ON/OFF 버튼]과 [시드머니 설정 버튼] 2가지 옵션만 유지
-  2) 보유 지층(buckets)을 날려버리는 /reset 기능을 사용자 메뉴 및 명령어에서 전면 차단하고,
-     보유 주식 지층(1~7층 단가·수량·정적 기억저가)과 기준 시드머니는 100% 보존한 채 누적 실현수익만 0점으로 초기화하여
+- Case 02, Case 64 & Case 80:
+  1) 전술 제어반(/settlement) 내 30분 옵션 및 중복 네비게이션 버튼 완전 제거 ->
+     ① [작동 ON/OFF 버튼], ② [황금시간(07:00~07:50·RSI≤19) 전액매수 모드 선택 버튼(기본값 OFF : NONE ↔ POCKET_ALLIN ↔ GRID_L1_ALLIN)],
+     ③ [시드머니 설정 버튼] 3대 핵심 조작 옵션 제공!
+  2) 보유 지층(buckets 및 golden_pocket)을 날려버리는 /reset 기능을 사용자 메뉴 및 명령어에서 전면 차단하고,
+     보유 주식 지층(1~7층 단가·수량·정적 기억저가 및 독립 골든포켓)과 기준 시드머니는 100% 보존한 채 누적 실현수익만 0점으로 초기화하여
      설정된 기준 시드머니(예: $10,000 또는 $19,000)의 8% 정량 투입으로 복귀시키는 `/reset_profit` 전용 기능으로 대체!
-- Case 70, Case 73, Case 74, Case 76, Case 77, Case 78 & Case 79:
-  1) 매수 직후 최초 60.0초 타임쉴드 유지 & 보유 중 60초 블라인드 대기 락 전면 해제 -> `/avwap` 레이더 상단 `⚡1.5s 실시간타점` 배지 표출
-  2) 0주 상태(04:07~16:00 EST 내 60초 타임쉴드 후 현재가 지정가 첫 1층 진입) / 상단 2층 ~ 7층 보유 중 1층 공석('60초(1분) 주기 1층 공석 재장전 모니터' 잔여 초 및
-     '2층 단가 상한($XX.XX 이하) / 1층>2층 단가 역전 차단(HOLD_PREVENT_INVERSION)') / 활성 1층 보유 중(10분 고정 와이드 게이트 &
-     STEP2X_15PCT_C20 3중 안전문 통과 시 🔓스텝업해금(-15%) 타점) 3대 상태 실시간 분리 표출
-  3) 💉 [Case 77] 30% 자투리 승격 방지 가드(GUARD30) · 시드고갈 입금 대기 배너(권장 입금액 & 단 1회 알림 발송 완료 래치) ·
-     예비시드 탄창 현황(사용 M/6회분 · 수혈잔액 · 누적상환액) 표출 및 `/sync` 실행 시 입금 확인 즉시 깨우기(wakeup_event) 직결!
-  4) 🎯 [Case 78] 활성 1층 지정가 부분 체결로 미체결 잔량(l1_rem_quota_qty > 0) 대기 중일 때
-     `/avwap`, `/sync`, `/settlement` 보드에 `1층 공격수 N주/목표M주 · 🎯잔량 K주($XX.XX 이하 1.5s감시)` 상태 실시간 표출!
-  5) 🌇🌃 [NEW · Case 79] 애프터마켓(16:00 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST) 구간에서
-     `⚡1.5s 실시간 익절 감시 가동 · 🔒장외 매수잠금(04:07 EST 해제)` 상태를 `/start` 및 `/avwap` 보드에 직관적으로 표출!
+- Case 70, Case 73, Case 74, Case 76, Case 77, Case 78, Case 79 & Case 80:
+  1) 매수 직후 최초 60.0초 타임쉴드 유지 & 보유 중 60초 블라인드 대기 락 전면 해제 -> `/avwap` 레이더 상단 `⚡1.5s 실시간타점` 및 실시간 `RSI(14)` 표출
+  2) 0주 상태 / 상단 2층 ~ 7층 보유 중 1층 공석 / 활성 1층 보유 중 3대 매수 모니터 상태 및
+     황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(+1.50% 익절) 상태 실시간 분리 표출
+  3) 💉 [Case 77] 30% 자투리 승격 방지 가드(GUARD30) · 시드고갈 입금 대기 배너 · 예비시드 탄창 현황 표출 및 `/sync` 실행 시 입금 확인 즉시 깨우기 직결!
+  4) 🎯 [Case 78] 활성 1층 지정가 부분 체결로 미체결 잔량(l1_rem_quota_qty > 0) 대기 중일 때 실시간 잔량 감시 표출!
+  5) 🌇🌃 [Case 79] 애프터마켓(16:00 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST) 구간 장외 익절감시 상태 표출!
 """
 
 from __future__ import annotations
@@ -53,13 +51,22 @@ from defense_plugin import (
     relock_stratum_on_bot_resume,
 )
 from plugin_updater import execute_git_pull_and_preflight
-from quant_engine import MAX_RESERVE_PORTIONS, summarize_stratum_portfolio
+from quant_engine import (
+    DEFAULT_GOLDEN_ALLIN_MODE,
+    GOLDEN_ALLIN_MODES,
+    GOLDEN_POCKET_RISE_PCT,
+    GOLDEN_RSI_MAX_THRESHOLD,
+    MAX_RESERVE_PORTIONS,
+    get_golden_allin_mode_label,
+    summarize_stratum_portfolio,
+)
 from quant_indicators_plugin import (
     evaluate_buy_gate_bucket_status,
     get_market_session_label,
     is_active_buy_window,
     is_active_sell_window,
     is_extended_sell_only_window,
+    is_golden_allin_time_window,
     refresh_metrics_with_live_tick,
 )
 from sniper_exit_plugin import (
@@ -197,24 +204,46 @@ def _build_radar_inline_keyboard() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _build_settlement_inline_keyboard(is_active: bool) -> Dict[str, Any]:
+def _build_settlement_inline_keyboard(
+    is_active: bool,
+    golden_allin_mode: str = DEFAULT_GOLDEN_ALLIN_MODE,
+) -> Dict[str, Any]:
     """
-    # [Case 64 엄수 & 하단 중복 메뉴 제거]:
-    전술 제어반(/settlement)에는 하단 고정 메뉴와 중복되는 [스나이퍼 레이더 / 지층 지시서] 버튼을 제거하고,
-    오직:
-    1) [작동 ON / OFF 전환 버튼]
-    2) [기준 시드머니($) 설정 버튼]
-    2가지 핵심 조작 옵션만 표출한다!
+    # MODIFIED [Case 64 & Case 80 : 전술 제어반(/settlement) 3대 핵심 조작 버튼]:
+    1) [작동 ON / OFF 전환 버튼 (toggle_bot_active)]
+    2) [황금시간(07:00~07:50·RSI≤19) 전액매수 모드 전환 버튼 (toggle_golden_allin_mode)]
+       - 기본값 OFF ("NONE") -> 클릭 시 POCKET_ALLIN -> GRID_L1_ALLIN -> NONE 순환
+    3) [기준 시드머니($) 설정 버튼 (prompt_seed_input)]
     """
     power_label = (
         "🔴 스나이퍼 작동 OFF 로 전환"
         if is_active
         else "🟢 스나이퍼 작동 ON 으로 전환"
     )
+    g_mode = (
+        str(golden_allin_mode or DEFAULT_GOLDEN_ALLIN_MODE).upper().strip()
+    )
+    if g_mode == "POCKET_ALLIN":
+        golden_btn_label = (
+            "🌟 황금시간 전액매수: 독립 골든포켓(ON) ➔ 변경"
+        )
+    elif g_mode == "GRID_L1_ALLIN":
+        golden_btn_label = (
+            "🔥 황금시간 전액매수: 7층그리드 1층편입(ON) ➔ 변경"
+        )
+    else:
+        golden_btn_label = "⚪ 황금시간(07:00~07:50·RSI≤19) 전액매수: OFF ➔ 변경"
+
     return {
         "inline_keyboard": [
             [
                 {"text": power_label, "callback_data": "toggle_bot_active"},
+            ],
+            [
+                {
+                    "text": golden_btn_label,
+                    "callback_data": "toggle_golden_allin_mode",
+                },
             ],
             [
                 {
@@ -235,9 +264,9 @@ def build_start_schedule_message(
     context: Optional[Any] = None,
 ) -> str:
     """
-    # MODIFIED [Case 02 & Case 79]:
+    # MODIFIED [Case 02, Case 79 & Case 80]:
     - /reset 을 메뉴에서 완전 삭제하고 그 자리에 /reset_profit 만 배치
-    - 애프터마켓(16:00 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST) 익절 매도 확장(매수 잠금) 스케줄 명시
+    - 황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 선택 옵션 및 애프터/데이마켓 익절 확장 스케줄 명시
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     dst_str = _get_dst_badge(dt_now)
@@ -247,6 +276,7 @@ def build_start_schedule_message(
         "──────────────",
         "🔹 04:00 ~ 04:06: 🌅 휩소 안정화",
         "🔹 04:07 ~ 09:29: 🔫 프리장 (매수·익절)",
+        "       (🌟 07:00~07:50·RSI≤19 전액매수 선택 지원)",
         "🔹 09:30 ~ 16:00: 🔥 정규장 (매수·익절)",
         "🔹 16:00 ~ 19:59: 🌇 애프터장 (익절감시·매수잠금)",
         "🔹 20:00 ~ 03:59: 🌃 데이장 (익절감시·매수잠금)",
@@ -254,7 +284,7 @@ def build_start_schedule_message(
         "📡 /avwap : 실시간 스나이퍼 레이더",
         "📜 /sync : 지층 지시서",
         "⚙️ /settlement : 전술 제어반",
-        "       (작동 ON/OFF · 시드머니 설정)",
+        "       (작동 ON/OFF · 황금시간 전액매수 · 시드설정)",
         "",
         "🧹 /reset_profit : 실현수익 0점 초기화",
         "",
@@ -269,23 +299,38 @@ def _format_multi_grid_stratum_lines(
     is_ext_sell_only: bool = False,
 ) -> List[str]:
     """
-    # MODIFIED [Case 71, Case 72, Case 73, Case 78 & Case 79]:
+    # MODIFIED [Case 71, Case 72, Case 73, Case 78, Case 79 & Case 80]:
+    독립 골든포켓(golden_pocket · 보유 시 최상단 표출) 및
     1층(활성 공격수 · 부분체결 시 미체결 잔량 및 1.5s 감시 표시 / 또는 60초 주기 공석 감시 & 2층 단가 상한) 및
     상단 2층 ~ 6층 개별 완충층 · 통합 7층 본대와 2~7층 통합 이동평균 목표가를 모바일 화면에 최적화된 형태로 전수 렌더링한다.
-    - 애프터마켓/데이마켓(is_ext_sell_only == True)에서는 매수는 잠겨 있고 익절 매도만 1.5s 실시간 감시 중임을 표시한다.
     """
     held_sh = safe_int(summary.get("held_shares"), 0)
+    gp_qty = safe_int(summary.get("golden_pocket_qty"), 0)
     buckets = summary.get("buckets", [])
+    lines: List[str] = []
+
+    # NEW [Case 80]: 독립 골든포켓(golden_pocket) 보유 시 최상단에 별도 분리 표출
+    if gp_qty > 0:
+        gp_p = safe_float(summary.get("golden_pocket_price"), 0.0)
+        gp_t = safe_float(summary.get("golden_pocket_target_price"), 0.0)
+        gp_g = safe_float(summary.get("golden_pocket_gain_pct"), 0.0)
+        gp_sign = "+" if gp_g >= 0.0 else ""
+        lines.append(
+            f"🌟 <b>[골든포켓: 독립전액 {gp_qty}주]</b> 단가 <b>${gp_p:.2f}</b> · "
+            f"익절 <b>${gp_t:.2f}</b>(+1.5%) [{gp_sign}{gp_g:.2f}%]"
+        )
+
     if held_sh <= 0 or not buckets:
         if is_ext_sell_only:
-            return [
-                "⚪ <b>[보유 지층 없음 · 0주]</b> 🔒장외 매수잠금 · 04:07 EST 프리장 개시 후 첫 1층(REENTRY_1FL) 진입 대기"
-            ]
-        return [
-            "⚪ <b>[보유 지층 없음 · 0주]</b> 60초 타임쉴드 확인 후 현재가 지정가 1층(REENTRY_1FL) 즉시 산입 대기"
-        ]
+            lines.append(
+                "⚪ <b>[그리드 지층 없음 · 0주]</b> 🔒장외 매수잠금 · 04:07 EST 프리장 개시 후 첫 1층(REENTRY_1FL) 진입 대기"
+            )
+        else:
+            lines.append(
+                "⚪ <b>[그리드 지층 없음 · 0주]</b> 60초 타임쉴드 확인 후 현재가 지정가 1층(REENTRY_1FL) 즉시 산입 대기"
+            )
+        return lines
 
-    lines: List[str] = []
     active_l1 = bool(summary.get("has_active_l1", True))
     rise_u_pct = safe_float(summary.get("rise_sell_l2_pct"), 1.00)
 
@@ -387,18 +432,15 @@ def build_avwap_radar_message(
     now_est: Optional[datetime] = None,
 ) -> str:
     """
-    # MODIFIED [Case 65, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77, Case 78 & Case 79]:
+    # MODIFIED [Case 65, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77, Case 78, Case 79 & Case 80]:
     📡 /avwap 사용자 중심 초슬림 레이더 메시지 생성:
-    - 상단 배지를 ⚡1.5s 실시간타점 (미체결 체결 감시 중일 때는 ⚡0.4s 체결감시)으로 표출한다.
-    - 애프터마켓/데이마켓(is_ext_sell_only == True)에서는 상단에 `🌇/🌃 장외 ⚡1.5s 익절감시 가동 중 (🔒매수잠금)` 배너를 표출한다.
-    - 매수 직후 최초 60.0초 타임쉴드(in_buy_shield) 가동 중일 때만 잔여 초를 표출하고,
-      경과 후에는 보유 중 불필요한 60초 매도 대기 문구 없이 상시 1.5초 실시간 익절 감시 상태를 표출한다.
-    - 🎯 [Case 78]: 1층이 부분 체결되어 미체결 잔량(l1_rem_quota_qty > 0)이 대기 중일 때는
-      매수 후 60초 타임쉴드 해제 즉시 `🎯 [1층 미체결 잔량 K주(목표 M주) ⚡1.5초 감시 중]` 배너를 표출한다.
+    - 상단 배지를 ⚡1.5s 실시간타점 (미체결 체결 감시 중일 때는 ⚡0.4s 체결감시)으로 표출하고 현재가 옆에 실시간 RSI(14)를 함께 표출한다.
+    - 황금시간대(07:00 ~ 07:50 EST) 전액매수 모드(OFF / POCKET_ALLIN / GRID_L1_ALLIN) 및 골든포켓 보유 현황을 실시간 표출한다.
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     hm_now = dt_now.hour * 100 + dt_now.minute
     is_ext_sell_only = is_extended_sell_only_window(hm_now, now_est=dt_now)
+    in_golden_win = is_golden_allin_time_window(hm_now, now_est=dt_now)
 
     met = refresh_metrics_with_live_tick(metrics, live_price, now_est=dt_now)
     lp = safe_float(
@@ -407,6 +449,7 @@ def build_avwap_radar_message(
             met.get("live_price"), safe_float(st.get("anchor_price"), 0.0)
         ),
     )
+    rsi_14 = safe_float(met.get("rsi_14"), 50.0)
 
     summary = summarize_stratum_portfolio(st, live_price=lp)
     is_active = bool(st.get("is_active", True))
@@ -422,6 +465,8 @@ def build_avwap_radar_message(
     )
 
     held_sh = safe_int(summary.get("held_shares"), 0)
+    gp_qty = safe_int(summary.get("golden_pocket_qty"), 0)
+    total_held_sh = safe_int(summary.get("total_held_shares"), held_sh + gp_qty)
     held_lots = safe_int(summary.get("held_lots"), 0)
     held_tiers = safe_int(summary.get("held_tiers"), 0)
     is_l2_only = bool(summary.get("is_l2_only_anti_bloat"))
@@ -429,8 +474,15 @@ def build_avwap_radar_message(
     l1_target_q = safe_int(summary.get("l1_target_quota_qty"), 0)
     buckets_list = summary.get("buckets", [])
     l1_book_p = buckets_list[0].book_price if buckets_list else lp
+    g_mode = str(
+        summary.get("golden_allin_mode") or DEFAULT_GOLDEN_ALLIN_MODE
+    ).upper()
+    g_mode_lbl = str(
+        summary.get("golden_allin_mode_label")
+        or get_golden_allin_mode_label(g_mode)
+    )
 
-    # 🛡️ Case 65, Case 70, Case 73, Case 77, Case 78 & Case 79: 타임쉴드 및 장외 익절 상태 확인
+    # 🛡️ Case 65, Case 70, Case 73, Case 77, Case 78, Case 79 & Case 80: 타임쉴드 및 장외/황금시간 상태 확인
     in_buy_shield, rem_buy_sec = is_within_post_buy_time_shield(
         context, st, TARGET_SYMBOL
     )
@@ -461,7 +513,7 @@ def build_avwap_radar_message(
         )
         shield_line = (
             f"🛡️ <b>[매수 직후 60초 타임쉴드 가동 중]</b> 잔여 <b>{rem_buy_sec:.1f}초</b> 후 "
-            f"⚡1.5초 실시간 3중 다중익절{topup_wait_note} 감시 개시"
+            f"⚡1.5초 실시간 4중 다중익절{topup_wait_note} 감시 개시"
         )
     elif waiting_dep:
         _, rem_dep_s = is_within_reserve_deposit_check_shield(
@@ -476,7 +528,12 @@ def build_avwap_radar_message(
         sess_lbl = get_market_session_label(dt_now)
         shield_line = (
             f"🌃 <b>[{escape_html(sess_lbl)}]</b> "
-            "보유 지층 목표가 도달 시 지정가 즉시 익절 · 신규/추가 매수는 04:07 EST 까지 잠금"
+            "보유 지층/골든포켓 목표가 도달 시 지정가 즉시 익절 · 신규/추가 매수는 04:07 EST 까지 잠금"
+        )
+    elif in_golden_win and g_mode != "NONE":
+        shield_line = (
+            f"🌟 <b>[황금시간(07:00~07:50 EST) 전액매수 감시 중 · {escape_html(g_mode_lbl)}]</b> "
+            f"현재 RSI(14) <b>{rsi_14:.2f}</b> (목표 <b>≤ {GOLDEN_RSI_MAX_THRESHOLD:.1f}</b> 도달 시 가용현금 100% 투입)"
         )
     elif is_l2_only and in_re_shield:
         shield_line = (
@@ -513,7 +570,6 @@ def build_avwap_radar_message(
     chg_anchor = safe_float(summary.get("chg_from_buy_anchor_pct"), 0.0)
     c_sign = "+" if chg_anchor >= 0.0 else ""
 
-    # [🎯 4 분기 1 & Case 65, Case 73, Case 76, Case 77, Case 78, Case 79]: 0주 상태 / 1층 공석 / 활성 1층 보유 3대 매수 모니터 상태 분리 표출
     if held_sh <= 0:
         if is_ext_sell_only:
             z_wait_label = "🔒장외 매수잠금 · 04:07 EST 해제"
@@ -584,6 +640,8 @@ def build_avwap_radar_message(
     dust_blk_cnt = safe_int(summary.get("daily_dust_guard_blocked_cnt"), 0)
     extra_13 = safe_int(summary.get("extra_13plus_buy_events"), 0)
     unlock_cnt = safe_int(summary.get("cond_unlock_buy_events"), 0)
+    g_buy_cnt = safe_int(summary.get("golden_allin_buy_events"), 0)
+    g_sell_cnt = safe_int(summary.get("golden_pocket_sell_cnt"), 0)
     saved_u = safe_float(summary.get("cumulative_leftover_saved_usd"), 0.0)
     cum_net = safe_float(summary.get("cumulative_realized_net_usd"), 0.0)
     free_cash = safe_float(summary.get("free_cash_usd"), 0.0)
@@ -595,6 +653,7 @@ def build_avwap_radar_message(
     dust_note = (
         f" (30%자투리차단 {dust_blk_cnt}회)" if dust_blk_cnt > 0 else ""
     )
+    gp_header_note = f"+골든포켓 {gp_qty}주" if gp_qty > 0 else ""
     res_status_line = (
         f"💉 예비시드 탄창: 사용 <b>{used_res_cnt}/{max_res_cnt}회분</b> "
         f"(수혈잔액 ${inj_res_usd:,.2f} · 0주졸업 자동상환)"
@@ -602,7 +661,7 @@ def build_avwap_radar_message(
 
     lines = [
         f"📡 <b>[레이더]</b> ({active_badge} · {fast_badge})",
-        f"🐂 <b>SOXL</b> [{active_badge}] 현재가 <b>${lp:.2f}</b>",
+        f"🐂 <b>SOXL</b> [{active_badge}] 현재가 <b>${lp:.2f}</b> · RSI(14) <b>{rsi_14:.1f}</b>",
     ]
     if shield_line:
         lines.append(shield_line)
@@ -610,15 +669,16 @@ def build_avwap_radar_message(
     lines.extend(
         [
             "──────────────",
-            f"🏛️ <b>[1~6층 개별 &amp; 통합 7층 본대 · 2~7층 통합이평]</b> (총 {held_sh}주 · {held_tiers}개층 · {held_lots}회차)",
+            f"🏛️ <b>[1~6층 개별 &amp; 통합 7층 본대 · 2~7층 통합이평]</b> (총 {total_held_sh}주 · {held_tiers}개층 · {held_lots}회차{gp_header_note})",
             *stratum_lines,
             "──────────────",
             gate_header_line,
             gate_cond_line,
             f"▫️ 차기 8% 정량: 예산 ${next_bud:,.2f}(30%가드 ${min_req_g30:,.2f}) ➔ {quota_badge_str}",
+            f"▫️ 황금시간(07:00~07:50·RSI≤19): <b>{escape_html(g_mode_lbl)}</b>",
             "──────────────",
             f"🛡️ 시드보호 패스: {pass_cnt:,}회{dust_note}",
-            f"🔥 13회차+ 확장매수: {extra_13}회 · 🔓 스텝업해금: {unlock_cnt}회",
+            f"🔥 13회차+ 확장: {extra_13}회 · 🔓 스텝업해금: {unlock_cnt}회 · 🌟 골든전액: {g_buy_cnt}회(포켓익절 {g_sell_cnt}회)",
             res_status_line,
             f"💰 자투리절약 누적: +${saved_u:,.2f} · 세후실현익: {n_sign}${abs(cum_net):,.2f}",
             f"💵 가용현금: <b>${free_cash:,.2f}</b> · 총자산: <b>${mark_eq:,.2f}</b> ({m_sign}{mark_roi:.2f}%)",
@@ -638,7 +698,7 @@ def build_sync_instruction_message(
     context: Optional[Any] = None,
 ) -> str:
     """
-    # 📜 /sync 사용자 중심 초슬림 지층 지시서 메시지 생성 (7칸 공백 들여쓰기 및 Case 77 예비시드 / Case 78 잔량 상태 적용)
+    # 📜 /sync 사용자 중심 초슬림 지층 지시서 메시지 생성 (7칸 공백 들여쓰기 및 Case 77 예비시드 / Case 78 잔량 / Case 80 골든포켓 상태 적용)
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     h_info = (holdings or {}).get(TARGET_SYMBOL, {})
@@ -655,6 +715,12 @@ def build_sync_instruction_message(
     actual_inv = safe_float(summary.get("actual_invested_usd"), 0.0)
 
     held_sh = safe_int(summary.get("held_shares"), 0)
+    gp_qty = safe_int(summary.get("golden_pocket_qty"), 0)
+    gp_price = safe_float(summary.get("golden_pocket_price"), 0.0)
+    gp_cost = safe_float(summary.get("golden_pocket_cost_usd"), 0.0)
+    total_held_sh = safe_int(
+        summary.get("total_held_shares"), held_sh + gp_qty
+    )
     held_tiers = safe_int(summary.get("held_tiers"), 0)
     held_lots = safe_int(summary.get("held_lots"), 0)
     l1_rem_q = safe_int(summary.get("l1_rem_quota_qty"), 0)
@@ -662,6 +728,7 @@ def build_sync_instruction_message(
     actual_avg = safe_float(summary.get("actual_avg_price"), 0.0)
     upper_wma = safe_float(summary.get("upper_wma_price"), 0.0)
     locked_min_p = safe_float(summary.get("cycle_min_buy_price"), 0.0)
+    g_mode_lbl = str(summary.get("golden_allin_mode_label") or "")
 
     used_res_cnt = safe_int(summary.get("used_reserve_portions_cnt"), 0)
     max_res_cnt = safe_int(
@@ -677,6 +744,11 @@ def build_sync_instruction_message(
         if l1_rem_q > 0
         else ""
     )
+    gp_sync_note = (
+        f" + 🌟골든포켓 {gp_qty}주(@${gp_price:.2f}·${gp_cost:,.2f})"
+        if gp_qty > 0
+        else ""
+    )
 
     lines = [
         "📜 <b>[스나이퍼 지시서]</b>",
@@ -684,7 +756,8 @@ def build_sync_instruction_message(
         f"🏦 스나이퍼 가용현금: <b>${free_cash:,.2f}</b>",
         f"       토스 실주문가능: ${broker_bp_usd:,.2f} (입금여력 +${unalloc_dep_usd:,.2f})",
         f"💉 예비시드 탄창: 사용 <b>{used_res_cnt}/{max_res_cnt}회분</b> (수혈잔액 ${inj_res_usd:,.2f} · 누적상환 ${cum_repaid_usd:,.2f})",
-        f"📦 보유 그리드 합계: <b>{held_sh}주</b> ({held_tiers}개층 · {held_lots}회차 · 순수매수원금 ${actual_inv:,.2f}{rem_note})",
+        f"🌟 황금시간 전액모드: <b>{escape_html(g_mode_lbl)}</b>",
+        f"📦 보유 합계: <b>{total_held_sh}주</b> (그리드 {held_sh}주[{held_tiers}개층·{held_lots}회차]{gp_sync_note} · 총원금 ${actual_inv:,.2f}{rem_note})",
         f"📐 전체 순수평단: <b>${actual_avg:.2f}</b> · 2~7층 통합이평: <b>${upper_wma:.2f}</b> (기억저가 ${locked_min_p:.2f})",
         "──────────────",
         f"🕒 동기화 시각: {dt_now.strftime('%Y-%m-%d %H:%M:%S EST')}",
@@ -699,7 +772,8 @@ def build_settlement_control_message(
     context: Optional[Any] = None,
 ) -> str:
     """
-    # ⚙️ /settlement 사용자 중심 초슬림 전술 제어반 메시지 생성 (0️⃣ ~ 4️⃣ 넘버링 및 10000 예시 적용)
+    # MODIFIED [Case 64 & Case 80]:
+    ⚙️ /settlement 사용자 중심 초슬림 전술 제어반 메시지 생성 (0️⃣ ~ 5️⃣ 넘버링 · 황금시간 전액매수 모드 선택 상태 표시)
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
     lp = safe_float(live_price, safe_float(st.get("anchor_price"), 100.0))
@@ -715,6 +789,8 @@ def build_settlement_control_message(
     )
     quota_badge_str = _format_case67_quota_badge(summary)
     held_sh = safe_int(summary.get("held_shares"), 0)
+    gp_qty = safe_int(summary.get("golden_pocket_qty"), 0)
+    gp_price = safe_float(summary.get("golden_pocket_price"), 0.0)
     held_tiers = safe_int(summary.get("held_tiers"), 0)
     held_lots = safe_int(summary.get("held_lots"), 0)
     l1_rem_q = safe_int(summary.get("l1_rem_quota_qty"), 0)
@@ -727,9 +803,22 @@ def build_settlement_control_message(
         summary.get("max_reserve_portions"), MAX_RESERVE_PORTIONS
     )
     inj_res_usd = safe_float(summary.get("injected_reserve_usd"), 0.0)
+    g_mode_lbl = str(summary.get("golden_allin_mode_label") or "")
+    g_buy_cnt = safe_int(summary.get("golden_allin_buy_events"), 0)
+    g_sell_cnt = safe_int(summary.get("golden_pocket_sell_cnt"), 0)
+    g_net_usd = safe_float(summary.get("golden_realized_net_usd"), 0.0)
+
     rem_note = (
         f" · 🎯1층잔량 {l1_rem_q}/{l1_target_q}주 대기"
         if l1_rem_q > 0
+        else ""
+    )
+    gp_note = (
+        f" + 🌟골든포켓 {gp_qty}주(@${gp_price:.2f})" if gp_qty > 0 else ""
+    )
+    g_stat_note = (
+        f" (매수 {g_buy_cnt}회·포켓익절 {g_sell_cnt}회·+${g_net_usd:,.2f})"
+        if (g_buy_cnt > 0 or g_sell_cnt > 0)
         else ""
     )
 
@@ -738,10 +827,11 @@ def build_settlement_control_message(
         f"0️⃣ 마스터 전원: <b>{power_str}</b>",
         f"1️⃣ 기준 시드머니: <b>${init_seed:,.2f}</b> (실현기준 총자산 ${real_eq:,.2f})",
         f"2️⃣ 차기 1회(8%) 정량: 예산 <b>${next_bud:,.2f}</b> ➔ {quota_badge_str} (가용현금 ${free_cash:,.2f})",
-        f"3️⃣ 현재 보유 지층: <b>{held_sh}주</b> ({held_tiers}개층 · {held_lots}회차{rem_note})",
+        f"3️⃣ 현재 보유 지층: <b>{held_sh}주</b> ({held_tiers}개층 · {held_lots}회차{gp_note}{rem_note})",
         f"4️⃣ 예비시드 탄창: 사용 <b>{used_res_cnt}/{max_res_cnt}회분</b> (수혈잔액 ${inj_res_usd:,.2f} · 잔여한도 {avail_res_cnt}회분)",
+        f"5️⃣ 황금시간(07:00~07:50·RSI≤19) 전액매수: <b>{escape_html(g_mode_lbl)}</b>{g_stat_note}",
         "──────────────",
-        "💡 시드머니를 변경하시려면 아래 <b>[💵 기준 시드머니($) 설정]</b> 버튼을 누른 뒤 숫자(예: <code>10000</code>)를 입력하거나, <code>/seed 10000</code> 명령어를 입력하세요.",
+        "💡 아래 버튼으로 <b>작동 ON/OFF</b> 및 <b>황금시간 전액매수 모드(OFF ↔ 독립골든포켓 ↔ 그리드1층편입)</b>를 선택하실 수 있으며, 시드 변경은 <b>[💵 기준 시드머니($) 설정]</b> 버튼을 누른 뒤 숫자(예: <code>10000</code>)를 입력하세요.",
         f"🕒 기준 시각: {dt_now.strftime('%m-%d %H:%M:%S EST')}",
     ]
     return "\n".join(lines)
@@ -752,7 +842,7 @@ def build_settlement_control_message(
 # ---------------------------------------------------------------------------
 class TelegramCommandController:
     """
-    🚨 제1헌법 & Case 02, 15, 16, 62, 64, 65, 66, 67, 68, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79:
+    🚨 제1헌법 & Case 02, 15, 16, 62, 64, 65, 66, 67, 68, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80:
     main.py 의 SniperAppContext 와 정식 결속되는 텔레그램 봇 컨트롤러.
     """
 
@@ -962,7 +1052,7 @@ class TelegramCommandController:
         )
 
     # -----------------------------------------------------------------------
-    # 실시간 시세/잔고 최신화 후 각 관제 보드 렌더링 (문단 하단 중복 인라인 키보드 제거)
+    # 실시간 시세/잔고 최신화 후 각 관제 보드 렌더링
     # -----------------------------------------------------------------------
     async def _refresh_live_price_and_metrics(
         self,
@@ -994,9 +1084,6 @@ class TelegramCommandController:
     async def _render_and_send_avwap(
         self, chat_id: str, edit_msg_id: Optional[int] = None
     ) -> None:
-        """
-        # 하단 고정 메뉴와 중복되는 문단 아래 인라인 버튼 부착 제거(reply_markup=None)
-        """
         live_p, met = await self._refresh_live_price_and_metrics()
         st = self.context.ledger.get_state(TARGET_SYMBOL)
         msg = build_avwap_radar_message(
@@ -1016,11 +1103,6 @@ class TelegramCommandController:
     async def _render_and_send_sync(
         self, chat_id: str, edit_msg_id: Optional[int] = None
     ) -> None:
-        """
-        # 하단 고정 메뉴와 중복되는 문단 아래 인라인 버튼 부착 제거(reply_markup=None)
-        # [Case 77]: 사용자가 입금 후 /sync 를 누르면 60초 입금 대기 타임쉴드를 즉시 해제하고
-        # wakeup_event.set() 을 호출하여 다음 루프에서 즉시 온디맨드 수혈 및 매수가 집행되도록 연동!
-        """
         now_est = datetime.now(EST_TZ)
         live_p, _ = await self._refresh_live_price_and_metrics()
         holdings_map, fetch_ok = (
@@ -1086,7 +1168,10 @@ class TelegramCommandController:
             message_id=edit_msg_id,
             text=msg,
             reply_markup=_build_settlement_inline_keyboard(
-                bool(st.get("is_active", True))
+                bool(st.get("is_active", True)),
+                str(
+                    st.get("golden_allin_mode") or DEFAULT_GOLDEN_ALLIN_MODE
+                ),
             ),
         )
 
@@ -1138,24 +1223,32 @@ class TelegramCommandController:
                 f"➔ {quota_badge_str}"
             ),
             reply_markup=_build_settlement_inline_keyboard(
-                bool(updated_st.get("is_active", True))
+                bool(updated_st.get("is_active", True)),
+                str(
+                    updated_st.get("golden_allin_mode")
+                    or DEFAULT_GOLDEN_ALLIN_MODE
+                ),
             ),
         )
         return True
 
     async def _reset_realized_profit_only(self, chat_id: str) -> None:
         """
-        # [Case 02, Case 74, Case 76 & Case 77]:
-        보유 중인 주식 지층(buckets · 1~7층 개별 단가 · 정적 기억저가 cycle_min_buy_price)과
-        설정된 기준 시드머니(initial_seed_usd)는 100% 보존하고, 오직 누적/당일 세후 실현수익금 및
-        자투리 절약금·스텝업 해금 횟수(cond_unlock_buy_events)·예비시드 통계·입금 알림 래치만 0점으로 초기화하여
-        설정된 기준 시드머니의 8% 정량 투입으로 복귀시킨다.
+        # [Case 02, Case 74, Case 76, Case 77 & Case 80]:
+        보유 중인 주식 지층(buckets · 1~7층 개별 단가 · 정적 기억저가 cycle_min_buy_price) 및
+        독립 골든포켓(golden_pocket)과 설정된 기준 시드머니(initial_seed_usd)는 100% 보존하고,
+        오직 누적/당일 세후 실현수익금 및 자투리 절약금·스텝업 해금 횟수·황금시간 매매 통계·예비시드 통계·입금 알림 래치만
+        0점으로 초기화하여 설정된 기준 시드머니의 8% 정량 투입으로 복귀시킨다.
         """
         mark_reserve_deposit_check_shield(
             self.context, TARGET_SYMBOL, clear_shield=True
         )
         st_cur = self.context.ledger.get_state(TARGET_SYMBOL)
         has_buckets = bool(st_cur.get("buckets"))
+        gp_cur = st_cur.get("golden_pocket") or {}
+        has_gp = bool(
+            isinstance(gp_cur, dict) and safe_int(gp_cur.get("qty"), 0) > 0
+        )
         reset_kw: Dict[str, Any] = {
             "cumulative_realized_gross_usd": 0.0,
             "cumulative_realized_fee_usd": 0.0,
@@ -1167,6 +1260,12 @@ class TelegramCommandController:
             "daily_seed_protect_pass_cnt": 0,
             "cond_unlock_buy_events": 0,
             "daily_unlock_buy_events": 0,
+            "golden_allin_buy_events": 0,
+            "daily_golden_allin_buy_events": 0,
+            "golden_pocket_sell_cnt": 0,
+            "daily_golden_pocket_sell_cnt": 0,
+            "golden_realized_net_usd": 0.0,
+            "daily_golden_realized_net_usd": 0.0,
             "total_reserve_injected_cnt": 0,
             "daily_reserve_injected_cnt": 0,
             "cumulative_reserve_repaid_usd": 0.0,
@@ -1191,7 +1290,7 @@ class TelegramCommandController:
             "daily_reanchor_cnt": 0,
             "cumulative_reanchor_drop_usd": 0.0,
         }
-        if not has_buckets:
+        if not has_buckets and not has_gp:
             reset_kw["used_reserve_portions_cnt"] = 0
             reset_kw["injected_reserve_usd"] = 0.0
 
@@ -1217,24 +1316,23 @@ class TelegramCommandController:
         )
         quota_badge_str = _format_case67_quota_badge(summary)
         held_sh = safe_int(summary.get("held_shares"), 0)
+        gp_sh = safe_int(summary.get("golden_pocket_qty"), 0)
         held_tiers = safe_int(summary.get("held_tiers"), 0)
         held_lots = safe_int(summary.get("held_lots"), 0)
+        gp_note = f"+골든포켓 {gp_sh}주" if gp_sh > 0 else ""
 
         await self.send_message(
             chat_id=chat_id,
             text=(
                 "🧹 <b>[실현수익 0점 초기화 완료]</b>\n"
-                "🔸 누적 세후실현익: <b>$0.00</b> (자투리절약 <b>$0.00</b> · 🔓스텝업해금 <b>0회</b>)\n"
+                "🔸 누적 세후실현익: <b>$0.00</b> (자투리절약 <b>$0.00</b> · 🔓해금/🌟골든통계 <b>0회</b>)\n"
                 f"🔸 복귀 기준시드: <b>${init_seed:,.2f}</b> (가용현금 <b>${free_cash:,.2f}</b>)\n"
                 f"🔸 차기 1회(8%) 정량: 예산 <b>${next_bud:,.2f}</b> ➔ {quota_badge_str}\n"
-                f"🔸 보유 지층 보존: <b>{held_sh}주</b> ({held_tiers}개층 · {held_lots}회차 유지)"
+                f"🔸 보유 지층 보존: <b>{held_sh}주</b> ({held_tiers}개층 · {held_lots}회차{gp_note} 유지)"
             ),
         )
 
     async def _execute_manual_update_command(self, chat_id: str) -> None:
-        """
-        # 사용자 중심 초슬림 시스템 업데이트 개시 및 검증 통과 메시지 타전
-        """
         await self._ack_telegram_offset(self._last_update_id)
         await self.send_message(
             chat_id=chat_id,
@@ -1293,7 +1391,7 @@ class TelegramCommandController:
         os._exit(0)
 
     # -----------------------------------------------------------------------
-    # 메시지 및 콜백 디스패처 (/reset 차단 및 /reset_profit 전용 대체)
+    # 메시지 및 콜백 디스패처 (/golden 모드 전환 및 /reset_profit 전용 대체)
     # -----------------------------------------------------------------------
     async def _handle_command_or_text(
         self, chat_id: str, raw_text: str
@@ -1369,6 +1467,17 @@ class TelegramCommandController:
             await self._render_and_send_settlement(chat_id=chat_id)
             return
 
+        if first_token == "/golden":
+            parts = text.split(maxsplit=1)
+            arg_mode = parts[1].strip() if len(parts) >= 2 else None
+            if hasattr(self.context.ledger, "cycle_golden_allin_mode"):
+                await self.context.ledger.cycle_golden_allin_mode(
+                    target_mode=arg_mode
+                )
+            self.context.wakeup_event.set()
+            await self._render_and_send_settlement(chat_id=chat_id)
+            return
+
         if first_token == "/seed":
             parts = text.split(maxsplit=1)
             if len(parts) >= 2:
@@ -1379,12 +1488,10 @@ class TelegramCommandController:
                 await self._render_and_send_settlement(chat_id=chat_id)
             return
 
-        # 오직 /reset_profit 만 허용하여 보유 지층(buckets)은 100% 보존하고 실현수익만 0점 초기화!
         if first_token == "/reset_profit":
             await self._reset_realized_profit_only(chat_id=chat_id)
             return
 
-        # 사용자가 실수로 /reset 또는 /reset_seed 를 입력하더라도 보유 지층을 절대 초기화하지 못하도록 원천 차단!
         if first_token in ("/reset", "/reset_seed"):
             await self.send_message(
                 chat_id=chat_id,
@@ -1451,6 +1558,33 @@ class TelegramCommandController:
             if now_active:
                 await relock_stratum_on_bot_resume(
                     context=self.context, now_est=datetime.now(EST_TZ)
+                )
+            self.context.wakeup_event.set()
+            await self._render_and_send_settlement(
+                chat_id=chat_id, edit_msg_id=msg_id
+            )
+        elif data == "toggle_golden_allin_mode":
+            if hasattr(self.context.ledger, "cycle_golden_allin_mode"):
+                await self.context.ledger.cycle_golden_allin_mode()
+            else:
+                st_cur = self.context.ledger.get_state(TARGET_SYMBOL)
+                cur_m = (
+                    str(
+                        st_cur.get("golden_allin_mode")
+                        or DEFAULT_GOLDEN_ALLIN_MODE
+                    )
+                    .upper()
+                    .strip()
+                )
+                try:
+                    idx = GOLDEN_ALLIN_MODES.index(cur_m)
+                    nxt_m = GOLDEN_ALLIN_MODES[
+                        (idx + 1) % len(GOLDEN_ALLIN_MODES)
+                    ]
+                except ValueError:
+                    nxt_m = "POCKET_ALLIN"
+                await self.context.ledger.update_state(
+                    TARGET_SYMBOL, golden_allin_mode=nxt_m
                 )
             self.context.wakeup_event.set()
             await self._render_and_send_settlement(
