@@ -3,7 +3,7 @@
 # MODIFIED: defense_plugin.py
 순수 롱(SOXL) 매수 04:07 ~ 16:00 EST 제한 & 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장
 오버나이트 7층 골디락스 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 및
-황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket) 지층관리 스나이퍼 전용 (Step 08 / 10):
+황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket) 지층관리 스나이퍼 전용 (Step 03 / 04):
 1) 🚨 [Case 66 & Case 79 봇 주문 진행 중 가로채기 차단 및 04:00 / 16:00 세션 경계 미결 매수·매도 선행 정산 가드]
    원장에 미결 매수(buy_order_id) 또는 미결 매도(sell_order_id)가 존재할 때 reconcile 모듈이나
    04:00 EST 오프닝 안정화 / 16:00 EST 마감 결산이 호출되면, 미체결 일괄 취소 전에
@@ -20,9 +20,10 @@
      보유 지층 및 골든포켓의 순수 매수 원금 대비 세후 실현수익(net_pnl_usd)을 원장(cumulative_realized_net_usd · free_cash_usd)에 즉시 복리 산입하고,
      l1_target_quota_qty = 0 클리어(Case 78) 및 compute_reserve_repayment_on_zero() 로 온디맨드 예비시드 원금을 자동 상환(Case 77)하며,
      mark_post_sell_time_shield(is_cycle_end=True) 와 last_sell_fill_ts / last_cycle_end_ts / last_reentry_eval_ts=0.0 을 각인하여 60.0초 타임쉴드를 강제!
-3) 🛡️ [Case 63, Case 69, Case 71 ~ Case 80 : 수동 매매 CLOSED 체결가 역추적 · 단가 비교 층간 편입 · 층별/포켓별 순수 원가 1:1 매칭 복리 정산 · 데이마켓 시세 미제공 100% 묵음]
+3) 🛡️ [Case 63, Case 69, Case 71 ~ Case 80 : 수동 매매 CLOSED 체결가 역추적 · 단가 비교 층간 편입 · 수동 추매 시 l1_target_quota_qty 동기화 · 층별/포켓별 순수 원가 1:1 매칭 복리 정산 · 데이마켓 시세 미제공 100% 묵음]
    - h_qty > ledger_qty 수동 추매 화해 시 토스 CLOSED 주문 원장에서 실제 수동 매수 체결가를 조회한 뒤,
-     1층 ~ 7층 단가와 비교하여 오름차순(저가 1층 ➔ 고가 7층) 층 사이에 스마트 편입하며 정적 기억저가 및 골든포켓 잠금 유지!
+     1층 ~ 7층 단가와 비교하여 오름차순(저가 1층 ➔ 고가 7층) 층 사이에 스마트 편입하며,
+     수동 추매분이 새 1층이 된 경우 l1_target_quota_qty 를 새 1층 수량으로 즉시 동기화하여 허위 잔량 발주(TOPUP_1FL)를 원천 차단!
    - h_qty < ledger_qty 수동 부분매도 화해 시 토스 이동평균법으로 희석된 매입금액(h_pur)을 덮어쓰지 않고,
      match_and_remove_sold_buckets_7tier(..., golden_pocket=gp) 로 차감된 물량의 순수 매수 원가만 1:1 매칭해 세후 실현수익을 복리 산입하며
      남은 각 그리드 층 및 골든포켓 고유의 순수 매수 단가(book_price == actual_avg_price)를 100% 보존!
@@ -525,8 +526,15 @@ async def reconcile_stratum_with_broker_holdings_plugin(
                 restored_kw["pending_sell_indices"] = []
                 restored_kw["pending_sell_pocket_qty"] = 0
                 restored_kw["pending_step_up_min_price"] = 0.0
+                # MODIFIED [Case 68 & Case 78]: 백업 금고 복원 시 활성 1층 여부에 따라 l1_target_quota_qty 정합성 보장
                 if has_active_l1_bucket(vault_buckets):
                     restored_kw["last_reentry_eval_ts"] = 0.0
+                    restored_kw["l1_target_quota_qty"] = max(
+                        vault_buckets[0].qty,
+                        safe_int(vault_st.get("l1_target_quota_qty"), 0),
+                    )
+                else:
+                    restored_kw["l1_target_quota_qty"] = 0
                 await context.ledger.update_state(TARGET_SYMBOL, **restored_kw)
                 logger.info(
                     "🛡️ [Case 68/72/76/77/80 백업 금고 7층 그리드/골든포켓 100%% 원형 복원 완료] 총 %d주 (그리드 %d개층 + 골든포켓 %d주 · 시드 $%.2f · 기억저가 $%.2f)",
@@ -669,6 +677,9 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             st=st,
             fallback_price=fb_buy_p,
         )
+        prev_had_active_l1 = has_active_l1_bucket(buckets)
+        prev_l1_p = buckets[0].book_price if buckets else 0.0
+
         merged_buckets = vrev_add_quota_lot_and_merge_2tier(
             queue=buckets,
             buy_qty=delta_q,
@@ -677,6 +688,26 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             lot_type="MANUAL_SYNC_L1",
             max_tiers=MAX_GRID_TIERS_7,
         )
+
+        # MODIFIED [Case 63 & Case 78]:
+        # 수동 추가매수 물량이 기존 1층보다 높아서 상단 층(GRID_L2~L7)으로 중간 편입된 경우에는 기존 1층의 l1_target_quota_qty 를 유지하고,
+        # 수동 추가매수 물량이 새로운 1층(merged_buckets[0])이 된 경우에는 새 1층 수량(merged_buckets[0].qty)으로 동기화하여
+        # 이전 1층 목표 정량과의 차이로 인한 허위 잔량 발주(TOPUP_1FL)를 100% 원천 차단!
+        if merged_buckets and has_active_l1_bucket(merged_buckets):
+            if (
+                prev_had_active_l1
+                and est_buy_p > (prev_l1_p + 1e-6)
+                and abs(merged_buckets[0].book_price - prev_l1_p) < 1e-4
+            ):
+                next_l1_target_q_manual = max(
+                    merged_buckets[0].qty,
+                    safe_int(st.get("l1_target_quota_qty"), 0),
+                )
+            else:
+                next_l1_target_q_manual = merged_buckets[0].qty
+        else:
+            next_l1_target_q_manual = 0
+
         old_min_p = safe_float(st.get("cycle_min_buy_price"), 0.0)
         new_min_p = (
             min(old_min_p, est_buy_p) if old_min_p > 0.0 else est_buy_p
@@ -707,6 +738,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             cycle_min_buy_price=round(new_min_p, 4),
             ratchet_anchor_price=est_buy_p,
             cycle_reanchor_credit_usd=0.0,
+            l1_target_quota_qty=next_l1_target_q_manual,
             pending_step_up_min_price=0.0,
             waiting_reserve_deposit=False,
             waiting_reserve_deposit_alert_sent=False,
@@ -718,12 +750,13 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             last_reentry_eval_ts=0.0,
         )
         logger.info(
-            "➕ [SOXL 수동 추가매수 7층 그리드 단가비교 편입 완료] +%d주 @ $%.2f 반영 -> 총 %d주(%d개층 + 골든포켓 %d주 · 기억저가 $%.2f)",
+            "➕ [SOXL 수동 추가매수 7층 그리드 단가비교 편입 완료] +%d주 @ $%.2f 반영 -> 총 %d주(%d개층 + 골든포켓 %d주 · 1층목표 %d주 · 기억저가 $%.2f)",
             delta_q,
             est_buy_p,
             h_qty,
             len(merged_buckets),
             gp_qty,
+            next_l1_target_q_manual,
             new_min_p,
         )
         return {
@@ -732,6 +765,7 @@ async def reconcile_stratum_with_broker_holdings_plugin(
             "buy_price": est_buy_p,
             "held_shares": h_qty,
             "tiers": len(merged_buckets),
+            "l1_target_quota_qty": next_l1_target_q_manual,
         }
 
     # 4-2) h_qty < ledger_qty (수동 부분 매도 또는 체결 후 잔여 수량 조정):

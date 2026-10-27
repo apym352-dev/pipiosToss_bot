@@ -3,7 +3,7 @@
 # MODIFIED: main.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
-경량화 메인 오케스트레이터 코어 모듈 (메인 코드 2분할 리팩토링 Part 2 / 2 · Step 10-B / 11)
+경량화 메인 오케스트레이터 코어 모듈 (메인 코드 2분할 리팩토링 Part 2 / 2 · Step 04 / 04)
 - 최종 확정 진화 챔피언 (🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 70 ~ Case 80) 100% 결속:
   1) main_runtime.py 와 역할 분리를 통해 모바일 편집기 및 유지보수에 최적화된 경량 오케스트레이터 구현
   2) 8%(12.5분할) 황금비율 정액 기반 정량제 & 온디맨드 예비시드 수혈금(injected_reserve_usd)을 제외한 순수 코어 총자산(core_equity) 기반 정량 산출 &
@@ -19,7 +19,7 @@
   7) ⚡ [Case 65, Case 70, Case 71, Case 72, Case 79 & Case 80] 매수 직후 최초 60.0초 타임쉴드 유지 & 이후 보유 중 프리·정규·애프터·데이마켓
      24시간 전 세션(is_active_sell_window)에서 매 1.5초 실시간 4중 다중 익절 스나이퍼 매도 모니터 가동!
      (① 독립 골든포켓 +1.50% / ② 1층 +1.50% / ③ 2~6층 개별 및 통합 7층 +1.00% / ④ 2~7층 통합 이동평균 +1.00% · 장외 시세미제공/거래제한 100% 묵음!)
-  8) 🚨 [Case 66 미결 매수/매도 선행 정산] 및 [Case 11 SIGTERM 0.1초 고속 안전 종료 가드]
+  8) 🚨 [Case 66 미결 매수/매도 선행 정산], [Case 11 SIGTERM 0.1초 고속 안전 종료 가드] 및 타임쉴드/장외 무포지션 네트워크 트래픽 최적화
 - 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온
 """
 
@@ -54,7 +54,12 @@ from plugin_updater import (
     purge_deprecated_legacy_files,
     verify_all_modules_compile,
 )
-from quant_engine import run_quant_engine_tdd
+from quant_engine import (
+    buckets_from_dicts,
+    has_active_l1_bucket,
+    pocket_from_dict,
+    run_quant_engine_tdd,
+)
 from quant_indicators_plugin import (
     evaluate_buy_gate_bucket_status,
     is_active_buy_window,
@@ -64,10 +69,13 @@ from quant_indicators_plugin import (
 )
 from sniper_exit_plugin import (
     execute_1m_sniper_sell_and_reanchor_plugin,
+    is_within_post_buy_time_shield,
+    is_within_post_sell_time_shield,
     sync_pending_sell_order_plugin,
 )
 from sniper_plugin import (
     execute_seed_protected_buy_gate_plugin,
+    is_within_reserve_deposit_check_shield,
     sync_pending_buy_order_plugin,
 )
 from toss_api import (
@@ -91,9 +99,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("toss_sniper.main")
 
-# 메인 루프 주기 상수 (평시 1.5초 실시간 타점 감시 / 미체결 주문 체결 확인 부스터 0.4초)
+# 메인 루프 주기 상수 (평시 1.5초 실시간 타점 감시 / 미체결 주문 체결 확인 부스터 0.4초 / 장외 0주 무포지션 대기 5.0초)
 NORMAL_LOOP_INTERVAL_SEC: float = 1.50
 FAST_SHIELD_LOOP_INTERVAL_SEC: float = 0.40
+EXTENDED_ZERO_HOLD_INTERVAL_SEC: float = 5.00
 
 
 # ---------------------------------------------------------------------------
@@ -182,22 +191,29 @@ class SniperAppContext:
 # ---------------------------------------------------------------------------
 async def candle_radar_loop(context: SniperAppContext) -> None:
     """
-    # [Case 79 & Case 80]:
+    # MODIFIED [Case 79 & Case 80 : 주말 휴장 폴링 차단 및 장외 트래픽 최적화]:
     1분봉 및 일봉을 주기적으로 수집하여 VWAP, 5MA 진폭, Heikin-Ashi 추세, Wilder's RSI(14) 기저값을 산출한다.
-    데이마켓/애프터마켓에서 브로커가 캔들 데이터를 제공하지 않더라도 경고 로그나 알림 없이 100% 묵음 처리한다.
+    - 주말 휴장(_check_weekend_nyse_closed_dynamic) 중에는 불필요한 차트 API 호출을 스킵하고 30초 대기한다.
+    - 데이마켓/애프터마켓에서 브로커가 캔들 데이터를 제공하지 않더라도 경고 로그나 알림 없이 100% 묵음 처리한다.
     """
     while not context.shutdown_event.is_set():
         now_est = datetime.now(EST_TZ)
+        if _check_weekend_nyse_closed_dynamic(now_est):
+            try:
+                await asyncio.wait_for(
+                    context.shutdown_event.wait(), timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                pass
+            continue
+
         hm = now_est.hour * 100 + now_est.minute
-        in_market = bool(
-            (400 <= hm <= 1605)
-            and not _check_weekend_nyse_closed_dynamic(now_est)
-        )
-        sleep_sec = 5.0 if in_market else 20.0
+        in_market = bool(400 <= hm <= 1605)
+        sleep_sec = 5.0 if in_market else 45.0
 
         try:
             candles_1m = await context.api.get_candles_1m(
-                symbol=TARGET_SYMBOL, total_count=300
+                symbol=TARGET_SYMBOL, total_count=(300 if in_market else 200)
             )
             candles_1d = await context.api.get_candles_1d(
                 symbol=TARGET_SYMBOL, count=10
@@ -248,11 +264,12 @@ def _evaluate_fast_shield_mode(
     live_p: float,
 ) -> bool:
     """
-    # [Case 70, Case 78, Case 79 & Case 80]:
+    # MODIFIED [Case 70, Case 78, Case 79 & Case 80]:
     - 평시 보유 중 매도 모니터, 황금시간(07:00~07:50 EST) 모니터 및 1층 미체결 잔량(TOPUP_1FL) 모니터는
       매 1.5초(NORMAL_LOOP_INTERVAL_SEC)마다 실시간 타점 감시를 수행한다.
-    - 0.4초 고속 루프(FAST_SHIELD_LOOP_INTERVAL_SEC)는 프리·정규·애프터·데이마켓 전 구간(is_active_sell_window)에서
-      미체결 주문(buy_order_id / sell_order_id) 체결 확인 시점 및 04:07 ~ 16:00 EST 의 10분 매수 게이트 정각 오픈 경계에서 작동한다.
+    - 0.4초 고속 루프(FAST_SHIELD_LOOP_INTERVAL_SEC)는:
+      1) 프리·정규·애프터·데이마켓 전 구간(is_active_sell_window)에서 미체결 주문(buy_order_id / sell_order_id) 체결 확인 대기 중일 때
+      2) 04:07 ~ 16:00 EST 의 10분 매수 게이트 정각 오픈 경계이면서 활성 1층이 존재하고 60초 타임쉴드나 입금대기 쉴드에 막혀 있지 않을 때만 작동한다.
     """
     hm = now_est.hour * 100 + now_est.minute
     if not is_active_sell_window(hm, now_est=now_est):
@@ -268,6 +285,22 @@ def _evaluate_fast_shield_mode(
         return True
 
     if is_active_buy_window(hm, now_est=now_est):
+        in_sell_sh, _ = is_within_post_sell_time_shield(
+            context, st, TARGET_SYMBOL
+        )
+        in_buy_sh, _ = is_within_post_buy_time_shield(
+            context, st, TARGET_SYMBOL
+        )
+        in_res_sh, _ = is_within_reserve_deposit_check_shield(
+            context, st, TARGET_SYMBOL
+        )
+        if in_sell_sh or in_buy_sh or in_res_sh:
+            return False
+
+        buckets = buckets_from_dicts(st.get("buckets", []))
+        if not buckets or not has_active_l1_bucket(buckets):
+            return False
+
         is_gate_open, _, _, b_info = evaluate_buy_gate_bucket_status(
             now_est=now_est,
             buy_interval_min=LOCKED_BUY_INTERVAL_MIN,
@@ -293,6 +326,7 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
     while not context.shutdown_event.is_set():
         now_est = datetime.now(EST_TZ)
         hm = now_est.hour * 100 + now_est.minute
+        is_ext_sell_only = False
 
         try:
             if _check_weekend_nyse_closed_dynamic(now_est):
@@ -491,11 +525,32 @@ async def main_sniper_loop(context: SniperAppContext) -> None:
                 "메인 7층 그리드 스나이퍼 루프 예외: %s", exc, exc_info=True
             )
 
-        loop_wait = (
-            FAST_SHIELD_LOOP_INTERVAL_SEC
-            if context.fast_shield_mode
-            else NORMAL_LOOP_INTERVAL_SEC
-        )
+        # MODIFIED: 프리·정규장 전 구간 및 장외 주식 보유 중에는 1.5초(또는 0.4초 부스터)를 100% 유지하되,
+        # 매수가 잠긴 장외(애프터·데이장)에서 보유 주식이 0주이고 미결 주문도 없을 때만 5.0초로 대기하여 네트워크 부하 절감
+        if context.fast_shield_mode:
+            loop_wait = FAST_SHIELD_LOOP_INTERVAL_SEC
+        elif is_ext_sell_only:
+            st_after = context.ledger.get_state(TARGET_SYMBOL)
+            b_after = st_after.get("buckets") or []
+            gp_after = pocket_from_dict(st_after.get("golden_pocket"))
+            h_qty_after = safe_int(
+                context.latest_holdings.get(TARGET_SYMBOL, {}).get("qty"), 0
+            )
+            has_pos_or_ord = bool(
+                len(b_after) > 0
+                or gp_after.is_active
+                or h_qty_after > 0
+                or str(st_after.get("buy_order_id") or "").strip()
+                or str(st_after.get("sell_order_id") or "").strip()
+            )
+            loop_wait = (
+                NORMAL_LOOP_INTERVAL_SEC
+                if has_pos_or_ord
+                else EXTENDED_ZERO_HOLD_INTERVAL_SEC
+            )
+        else:
+            loop_wait = NORMAL_LOOP_INTERVAL_SEC
+
         context.wakeup_event.clear()
         try:
             await asyncio.wait_for(

@@ -36,8 +36,9 @@ SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 
        cumulative_reserve_repaid_usd, dust_guard_blocked_cnt, daily_dust_guard_blocked_cnt,
        waiting_reserve_deposit, waiting_reserve_deposit_alert_sent(스팸 차단 영구 래치),
        required_reserve_deposit_usd, last_reserve_check_ts 원장 영속화 및 회계 항등식 확장
-  10) 🚨 [Case 78 : 지정가 부분 체결 후 미체결 잔량(l1_target_quota_qty) 보존 및 1.5초 모니터 기반 잔량(TOPUP_1FL) 지정가 60초 대기 완수]
+  10) 🚨 [Case 67 & Case 78 : 지정가 부분 체결 후 미체결 잔량(l1_target_quota_qty) 보존 및 신규 1층 추매 발주 중 기존 1층 수량 덮어쓰기 차단]
       - l1_target_quota_qty 원장 영속화 및 0주 졸업 / 1층 익절 공석 전환 시 자동 클리어 정규화 탑재
+      - 신규 1층 생성형 주문(DIP_1FL / QUOTA_L1 / REENTRY_1FL / GOLDEN_L1) 대기 중 기존 1층 수량과의 max() 오염 원천 차단
   11) 🚨 [Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용현금 100% 전액 추가매수 &
       독립 골든포켓(golden_pocket) 분리회계 & 전술 제어반(/settlement) 3대 모드 선택기(기본값 "NONE" [OFF]) &
       1분봉 캔들 페이지네이션 방탄화(1페이지 200봉 유실 차단 및 스키마 다변화 대응) 탑재]
@@ -255,7 +256,7 @@ def resolve_folder_isolated_ledger_paths(
     legacy_path = os.path.join(target_dir, "soxl_stratum_ledger.json")
     backup_dir = os.path.join(target_dir, "ledger_backups")
     backup_path = os.path.join(
-        backup_dir, f"soxl_stratum_ledger_{folder_slug}.bak.json"
+        backup_dir, f"soxl_stratum_ledger_{folder_slug>.bak.json".replace(">", "")
     )
     return primary_path, legacy_path, backup_path, folder_slug
 
@@ -426,8 +427,10 @@ class GlobalThrottle:
     _file_locks_guard = threading.Lock()
     _file_locks: Dict[str, _HybridFileLock] = {}
 
+    # MODIFIED: API.txt v1.2.14 Rate Limits Group 전수 커버 (ACCOUNT 등 명시)
     GROUP_INTERVALS: Dict[str, float] = {
         "AUTH": 0.50,
+        "ACCOUNT": 0.25,
         "ORDER": 0.18,
         "ORDER_HISTORY": 0.15,
         "ORDER_INFO": 0.15,
@@ -809,7 +812,7 @@ class SoxlStratumLedger:
         self, raw_st: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        🚨 Case 63, Case 64, Case 68, Case 69, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77, Case 78 & Case 80:
+        🚨 Case 63, Case 64, Case 67, Case 68, Case 69, Case 70, Case 71, Case 72, Case 73, Case 74, Case 76, Case 77, Case 78 & Case 80:
         1) buy_interval_min = 10, sell_interval_min = 1, max_grid_tiers = 7 (MAX_GRID_TIERS_7),
            portion_mode = "COMP_08PCT", threshold_mode = "WIDE_RUNWAY", unlock_mode = "STEP2X_15PCT_C20" 를 강제 동기화하고,
            golden_allin_mode 는 GOLDEN_ALLIN_MODES ("NONE", "POCKET_ALLIN", "GRID_L1_ALLIN") 중 하나로 검증한다(기본값 "NONE").
@@ -818,7 +821,7 @@ class SoxlStratumLedger:
            - 모든 보유 지층(1층 ~ 7층) 및 독립 골든포켓(golden_pocket)의 장부 단가(book_price)와 장부 투자금(book_invested_usd)을
              순수 실물 매수 원가(actual_avg_price = ac / q, actual_cost_usd = ac)와 100% 일치시켜,
              리앵커링 차감이나 이동평균 희석으로 인한 조기 손절 착시를 물리적으로 원천 봉쇄한다!
-        4) 🛡️ [Case 73, Case 76, Case 78 & Case 80 타임쉴드 · 스텝업 대기값 · 1층 목표 정량 · 골든포켓 매도수량 정규화]
+        4) 🛡️ [Case 67, Case 73, Case 76, Case 78 & Case 80 타임쉴드 · 스텝업 대기값 · 1층 목표 정량 · 골든포켓 매도수량 정규화]
         5) 💉 [Case 77 & Case 80 온디맨드 예비시드 수혈 잔액(injected_reserve_usd) · 골든포켓 투입원금 통합 회계 항등식]:
            - 회계 항등식: free_cash_usd = round(max(0.0, (init_seed + cum_net + injected_reserve_usd) - (actual_inv_buckets + pocket_cost)), 4) 를 정밀 유지한다.
         """
@@ -1029,14 +1032,30 @@ class SoxlStratumLedger:
             st["last_sell_gate_eval_ts"] = round(
                 max(0.0, safe_float(st.get("last_sell_gate_eval_ts"), 0.0)), 4
             )
-            # Case 73 & Case 78: 활성 1층 존재 여부에 따른 타임쉴드 및 목표 정량(l1_target_quota_qty) 정규화
+            # MODIFIED [Case 67, Case 73 & Case 78]:
+            # 활성 1층 보유 중 신규 1층 추매 주문(DIP_1FL / QUOTA_L1 / REENTRY_1FL / GOLDEN_L1)이 발주 대기 중일 때,
+            # 기존 1층 수량(cur_l1_q)과 max() 를 취해 신규 추매의 목표 정량(raw_target_q)을 덮어쓰는 오염을 원천 차단!
             has_active_l1 = not self._is_upper_grid_tag(
                 str(clean_buckets[0].get("lot_type") or "")
             )
             if has_active_l1:
                 st["last_reentry_eval_ts"] = 0.0
                 cur_l1_q = max(1, safe_int(clean_buckets[0].get("qty"), 1))
-                st["l1_target_quota_qty"] = max(cur_l1_q, raw_target_q)
+                if has_pending_buy and pending_lot_tag not in (
+                    "",
+                    "TOPUP_1FL",
+                    "GOLDEN_POCKET",
+                ):
+                    ord_q_pending = max(0, safe_int(st.get("ordered_qty"), 0))
+                    st["l1_target_quota_qty"] = (
+                        raw_target_q
+                        if raw_target_q > 0
+                        else (
+                            ord_q_pending if ord_q_pending > 0 else cur_l1_q
+                        )
+                    )
+                else:
+                    st["l1_target_quota_qty"] = max(cur_l1_q, raw_target_q)
             else:
                 st["last_reentry_eval_ts"] = round(
                     max(0.0, safe_float(st.get("last_reentry_eval_ts"), 0.0)),
@@ -1280,7 +1299,11 @@ class SoxlStratumLedger:
             return False
 
         new_soxl = cls._extract_raw_soxl_dict(payload)
-        if not force_write and new_soxl is not None and os.path.isfile(target_path):
+        if (
+            not force_write
+            and new_soxl is not None
+            and os.path.isfile(target_path)
+        ):
             try:
                 with open(target_path, "r", encoding="utf-8") as rf:
                     existing_loaded = json.load(rf)

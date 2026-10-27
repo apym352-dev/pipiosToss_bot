@@ -7,9 +7,9 @@
 최종 확정 진화 챔피언(🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 71 ~ Case 80) :
 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & 14봉 이상 확보된 1분봉 Wilder RSI(14) <= 19.0) 도달 시 제어반 선택 모드(POCKET_ALLIN / GRID_L1_ALLIN)에 따른
 가용 현금 시드(free_cash_usd) 100% 전액 추가매수 발주 및 독립 골든포켓(golden_pocket) 분리 정산(Case 80) ·
-독립 골든포켓 가동 중 그리드 0주 상태에서 불필요한 1.5초 시세 조회 차단(HOLD_ZERO_GRID_CASH_IN_GOLDEN_POCKET · Case 80) ·
-0주 상태 60초 타임쉴드 경과 후 현재가 지정가 실물 1층(REENTRY_1FL) 산입 ·
-활성 1층 부분 체결(buckets[0].qty < l1_target_quota_qty) 시 체결 수량 비례 자투리 정산 &
+독립 골든포켓 가동 중 그리드 0주/보유 상태에서 불필요한 1.5초 시세 조회 차단(HOLD_ZERO_GRID_CASH_IN_GOLDEN_POCKET / 60s 쉴드 · Case 80) ·
+0주 상태 60초 타임쉴드 경과 후 현재가 지정가 실물 1층(REENTRY_1FL) 산입 & 원장 0주·실잔고 시차 발생 시 buckets[0] IndexError 원천 방어 ·
+활성 1층 부분 체결(buckets[0].qty < l1_target_quota_qty) 시 체결 수량 비례 자투리 정산 & 신규 1층 주문 정량(ord_q) 고유 보존 &
 매수 후 60초 타임쉴드 경과 뒤 매 1.5초 실시간 모니터에서 현재가 <= 1층 단가(buckets[0].book_price) 재도래 시
 미체결 잔량(TOPUP_1FL) 지정가 60초 재대기 발주 및 기존 1층 무승격 원자적 합산(Case 78) ·
 상단 2층 ~ 7층(GRID_L2 ~ GRID_L7) 보유 중 1층 공석 시 10분 게이트를 기다리지 않고 매 60.0초(1분) 타임쉴드 주기마다
@@ -22,7 +22,7 @@
 30% 자투리 1주 승격 방지 가드(GUARD30) & 예수금 API 일시 오류(0.0 반환) 시 재시도 및 허위 시드고갈 알림 차단 &
 시드고갈 시 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent) &
 토스 실계좌 여유자금(1회분 이상) 입금 자동 감지 기반 최대 +6회분 온디맨드 예비시드 자동 수혈(Case 77) ·
-체결 시 1~7층 순수 멀티 그리드 승격·자투리 시드 귀속·기정산 주문 ID(last_settled_order_ids) 각인·양방향 인덱싱 보호(Case 69, Case 71 ~ 80)' 코어 플러그인 (Step 03 / 04)
+체결 시 1~7층 순수 멀티 그리드 승격·자투리 시드 귀속·기정산 주문 ID(last_settled_order_ids) 각인·양방향 인덱싱 보호(Case 69, Case 71 ~ 80)' 코어 플러그인 (Step 02 / 04)
 - 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 완벽 준수
 """
 
@@ -369,9 +369,10 @@ def mark_reserve_deposit_check_shield(
     clear_shield: bool = False,
 ) -> float:
     """
-    # [Case 77 : 시드고갈 입금 대기 중 60.0초 주기 입금 감시 타임쉴드 기록기]:
-    시드고갈(GUARD30)로 매수가 보류된 상태에서 매 1.5초마다 /api/v1/buying-power 를 과도하게 호출하지 않고
-    정확히 60.0초(1분) 주기로 토스 계좌 여유자금 입금 여부를 확인하도록 타임쉴드를 기록한다.
+    # [Case 77 & Case 80 : 시드고갈 입금 대기 또는 골든포켓 현금 가동 중 60.0초 주기 확인 타임쉴드 기록기]:
+    시드고갈(GUARD30) 또는 골든포켓 전액 투입으로 일반 매수가 보류된 상태에서
+    매 1.5초마다 /api/v1/buying-power 나 시세를 과도하게 호출하지 않고
+    정확히 60.0초(1분) 주기로 확인하도록 타임쉴드를 기록한다.
     """
     sym = str(symbol or TARGET_SYMBOL).upper().strip()
     now_mono = 0.0 if clear_shield else time.monotonic()
@@ -404,8 +405,8 @@ def is_within_reserve_deposit_check_shield(
     symbol: str = TARGET_SYMBOL,
 ) -> Tuple[bool, float]:
     """
-    # [Case 77 : 시드고갈 입금 대기 중 60.0초 타임쉴드 판별기]:
-    직전 예비시드 입금 확인 시각(last_reserve_check_mono / last_reserve_check_ts)으로부터
+    # [Case 77 & Case 80 : 시드고갈 입금 대기 중 60.0초 타임쉴드 판별기]:
+    직전 예비시드 입금(또는 골든포켓 현금 대기) 확인 시각(last_reserve_check_mono / last_reserve_check_ts)으로부터
     60.0초(RESERVE_DEPOSIT_CHECK_INTERVAL_SEC)가 경과하지 않았으면 True 와 잔여 초를 반환한다.
     """
     sym = str(symbol or TARGET_SYMBOL).upper().strip()
@@ -523,10 +524,11 @@ async def _check_and_execute_guard30_or_reserve_injection(
     """
     🚨 [Case 77 & Case 80 : 💉 05_RESV_6P_GUARD30 실행 엔진]:
     매수 주문 발주 직전(뮤텍스 내부)에 호출되어:
-    0) [Case 80 골든포켓 일시 가동 중 오발동 방어]:
+    0) [Case 80 골든포켓 일시 가동 중 오발동 방어 및 60초 인메모리 쉴드]:
        만약 현재 독립 골든포켓(golden_pocket.qty > 0)에 가용 현금 100%가 일시 투입되어 있어
        now_free_cash 가 부족한 상태라면, 이는 시드 고갈이 아니라 골든포켓(+1.50% 익절 대기) 가동 상태이므로
-       예비시드 수혈이나 입금 요청 알림을 발송하지 않고 조용히 대기(HOLD_CASH_DEPLOYED_IN_GOLDEN_POCKET)한다!
+       예비시드 수혈이나 입금 요청 알림을 발송하지 않고 60초 인메모리 쉴드(mark_reserve_deposit_check_shield)를
+       작동시킨 뒤 조용히 대기(HOLD_CASH_DEPLOYED_IN_GOLDEN_POCKET)한다!
     1) 토스 실계좌 주문가능 달러(`raw_bp_usd = await context.api.get_buying_power_usd(safety_buffer_pct=0.0)`)를 조회하되,
        원장 가용현금이 충분함에도(`now_free_cash >= est_min_req`) 일시 네트워크 타임아웃으로 `0.0` 이 반환되면
        `0.25초` 후 1회 재시도하고, 여전히 `0.0` 이면 허위 시드고갈 알림 발송이나 영구 래치 잠금 없이
@@ -539,8 +541,8 @@ async def _check_and_execute_guard30_or_reserve_injection(
     cur_used_res = max(0, safe_int(st_now.get("used_reserve_portions_cnt"), 0))
     cur_inj_usd = max(0.0, safe_float(st_now.get("injected_reserve_usd"), 0.0))
 
-    # [Case 80]: 독립 골든포켓(golden_pocket)이 보유 중이어서 현금이 골든포켓에 가동 중일 때
-    # 일반 그리드 매수 시도로 인해 시드고갈 알림이나 예비시드 수혈이 오발동하는 현상을 100% 원천 차단!
+    # MODIFIED [Case 80]: 독립 골든포켓(golden_pocket)이 보유 중이어서 현금이 골든포켓에 가동 중일 때
+    # 일반 그리드 매수 시도로 인해 시드고갈 알림이나 예비시드 수혈이 오발동하는 현상을 차단하고 60초 인메모리 쉴드로 API 스팸을 방지!
     gp_now = pocket_from_dict(st_now.get("golden_pocket"))
     fee_mult = 1.0 + (ROUND_TRIP_FEE_RATE_PCT / 100.0)
     est_min_req = max(
@@ -549,6 +551,9 @@ async def _check_and_execute_guard30_or_reserve_injection(
         (l1_actual_cost_usd * MIN_DIP_VS_L1_RATIO if is_dip_promotion else 0.0),
     )
     if gp_now.is_active and now_free_cash < est_min_req:
+        mark_reserve_deposit_check_shield(
+            context=context, symbol=TARGET_SYMBOL, clear_shield=False
+        )
         if is_vacant_l1_reentry:
             re_epoch = mark_reentry_monitor_60s_cycle_shield(
                 context=context, symbol=TARGET_SYMBOL, eval_price=exec_order_p
@@ -958,8 +963,11 @@ async def _commit_filled_buy_to_stratum_ledger(
         max_tiers=MAX_GRID_TIERS_7,
     )
 
-    # 🚨 [Case 78 & Case 80 : 1층 목표 정량(l1_target_quota_qty) 보존 및 미체결 잔량 산출]
-    # GOLDEN_L1 은 가용현금 100% 전액 주문이므로 부분 체결 시에도 잔량 추격(TOPUP_1FL) 없이 기체결 수량을 목표 정량으로 확정한다.
+    # MODIFIED [Case 67, Case 78 & Case 80 : 1층 목표 정량(l1_target_quota_qty) 보존 및 이전 층 수량 오염 차단]
+    # - GOLDEN_L1 은 가용현금 100% 전액 주문이므로 부분 체결 시에도 잔량 추격(TOPUP_1FL) 없이 기체결 수량을 목표 정량으로 확정한다.
+    # - TOPUP_1FL 은 기존 1층 목표 정량(raw_target_q)을 그대로 승계한다.
+    # - 신규 1층 생성(REENTRY_1FL / DIP_1FL / QUOTA_L1) 시에는 이전 1층의 잔재(raw_target_q)가 아닌
+    #   이번 주문의 발주 정량(ord_q)만을 목표 정량으로 고정하여 1회분(8%) 예산 초과를 원천 차단한다!
     raw_target_q = max(0, safe_int(st.get("l1_target_quota_qty"), 0))
     cur_l1_qty = new_buckets[0].qty if new_buckets else q_int
     if tag == "GOLDEN_L1":
@@ -967,9 +975,7 @@ async def _commit_filled_buy_to_stratum_ledger(
     elif tag == "TOPUP_1FL":
         next_l1_target_q = max(cur_l1_qty, raw_target_q)
     else:
-        next_l1_target_q = max(
-            cur_l1_qty, ord_q, (raw_target_q if q_int < ord_q else ord_q)
-        )
+        next_l1_target_q = max(cur_l1_qty, ord_q)
     rem_after_fill = max(0, next_l1_target_q - cur_l1_qty)
 
     # 🚨 Case 60, Case 72 & Case 76: 정적 기억 최저가 잠금 및 STEP2X_15PCT_C20 스텝업 해금 갱신!
@@ -1440,19 +1446,18 @@ async def execute_seed_protected_buy_gate_plugin(
             "remain_shield_sec": remain_buy_sec,
         }
 
-    # 🛡️ 3-B) [Case 77] 시드고갈 입금 대기 중일 때 60.0초 입금 감지 타임쉴드 검문
-    if bool(st.get("waiting_reserve_deposit", False)):
-        in_res_sh, rem_res_sec = is_within_reserve_deposit_check_shield(
-            context, st, TARGET_SYMBOL
-        )
-        if in_res_sh:
-            return {
-                "status": "HOLD_WAITING_RESERVE_DEPOSIT_60S_SHIELD",
-                "remain_shield_sec": rem_res_sec,
-                "required_reserve_deposit_usd": safe_float(
-                    st.get("required_reserve_deposit_usd"), 0.0
-                ),
-            }
+    # 🛡️ 3-B) [Case 77 & Case 80] 시드고갈 입금 대기 또는 골든포켓 현금 가동 중일 때 60.0초 감지 타임쉴드 검문
+    in_res_sh, rem_res_sec = is_within_reserve_deposit_check_shield(
+        context, st, TARGET_SYMBOL
+    )
+    if in_res_sh:
+        return {
+            "status": "HOLD_WAITING_RESERVE_DEPOSIT_60S_SHIELD",
+            "remain_shield_sec": rem_res_sec,
+            "required_reserve_deposit_usd": safe_float(
+                st.get("required_reserve_deposit_usd"), 0.0
+            ),
+        }
 
     live_p = _get_live_soxl_price(context, prices, holdings, dt_now)
     if live_p <= 0.0:
@@ -2160,6 +2165,15 @@ async def execute_seed_protected_buy_gate_plugin(
                     "price": exec_order_p,
                     "l2_ceiling_price": min_upper_tier_p,
                 }
+
+    # MODIFIED: 원장 그리드가 비어 있으나(len(buckets) == 0) 실계좌 잔고(h_qty)와 일시 시차가 존재하는 경우 IndexError 원천 차단
+    if not buckets or not has_active_l1:
+        return {
+            "status": "WAIT_HOLDINGS_RECONCILE_SYNC",
+            "ledger_grid_qty": len(buckets),
+            "broker_qty": h_qty,
+            "pocket_qty": gp.qty,
+        }
 
     # -----------------------------------------------------------------------
     # [분기 B-0 · Case 78 : 활성 1층 부분 체결 미체결 잔량(rem_quota_qty > 0) 존재 시]
