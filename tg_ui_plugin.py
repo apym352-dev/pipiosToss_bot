@@ -3,14 +3,15 @@
 # MODIFIED: tg_ui_plugin.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
-텔레그램 관제탑 사용자 중심 초슬림 UI 렌더러 및 명령어·콜백 비동기 컨트롤러 코어 모듈 (Step 04 / 04)
-- 제1헌법: 모든 텔레그램 HTTP API 호출을 asyncio.to_thread 로 비동기 격리 및 타임아웃 적용
+텔레그램 관제탑 사용자 중심 초슬림 UI 렌더러 · 불사조 롱폴링(Immortal Telegram Polling) 및 명령어·콜백 비동기 컨트롤러 코어 모듈 (Step 02 / 04)
+- 제1헌법: 모든 파일 I/O 및 동기 HTTP 폴백 호출을 asyncio.to_thread 로 비동기 격리 및 타임아웃 적용
 - 제4헌법: 모든 논리 시계열은 미국 동부 시간(EST/EDT) 100% 락온
 - Case 11 & Case 62:
   1) toss_api 심볼 불일치(KRW_PER_USD_DEFAULT) 방지를 위해 모듈 내부 자체 상수로 직접 정의하여
      `python3 plugin_updater.py --verify-only` AST 심볼 교차 검증 100% 통과 보장!
   2) 기동 직후 _flush_stale_updates_on_startup() 에서 조건 없이 큐의 마지막 update_id 까지 일괄 소각(Ack)
-  3) /update 실행 시 오프셋 선행 확정 후 신규 커밋(changed == True)이 있을 때만 재기동(os._exit(0))하고,
+  3) /update 실행 시 오프셋 3중 선행 확정(.tg_update_offset_<slug>.dat + 원장 + 텔레그램 서버) 후
+     신규 커밋(changed == True)이 있을 때만 Case 81 인플레이스 자가 교체(os.execv + 3.5초 워치독)로 재기동하고,
      이미 최신 코드(changed == False)일 때는 재기동 없이 무중단 가동 유지!
 - Case 15 & Case 16: 사용자 중심 초슬림 모바일 가독성 최적화, 문단 하단 2중 중복 인라인 네비게이션 버튼 전면 제거
   (하단 고정 키보드 단일 유지), 기동 완료 시 "✅ 서버가 정상 작동 중입니다." 단일 라인 타전
@@ -21,7 +22,7 @@
   2) 보유 지층(buckets 및 golden_pocket)을 날려버리는 /reset 기능을 사용자 메뉴 및 명령어에서 전면 차단하고,
      보유 주식 지층(1~7층 단가·수량·정적 기억저가 및 독립 골든포켓)과 기준 시드머니는 100% 보존한 채 누적 실현수익만 0점으로 초기화하여
      설정된 기준 시드머니(예: $10,000 또는 $19,000)의 8% 정량 투입으로 복귀시키는 `/reset_profit` 전용 기능으로 대체!
-- Case 70, Case 73, Case 74, Case 76, Case 77, Case 78, Case 79 & Case 80:
+- Case 70, Case 73, Case 74, Case 75, Case 76, Case 77, Case 78, Case 79, Case 80 & Case 81:
   1) 매수 직후 최초 60.0초 타임쉴드 유지 & 보유 중 60초 블라인드 대기 락 전면 해제 -> `/avwap` 레이더 상단 `⚡1.5s 실시간타점` 및 실시간 `RSI(14)` 표출
      (/avwap 호출 시 1분봉 기저값 미확보 상태면 즉시 온디맨드 1분봉 프리워밍 수행으로 RSI 50.0 박제 현상 원천 차단!)
   2) 0주 상태 / 상단 2층 ~ 7층 보유 중 1층 공석 / 활성 1층 보유 중 3대 매수 모니터 상태 및
@@ -29,6 +30,9 @@
   3) 💉 [Case 77] 30% 자투리 승격 방지 가드(GUARD30) · 시드고갈 입금 대기 배너 · 예비시드 탄창 현황 표출 및 `/sync` 실행 시 입금 확인 즉시 깨우기 직결!
   4) 🎯 [Case 78] 활성 1층 지정가 부분 체결로 미체결 잔량(l1_rem_quota_qty > 0) 대기 중일 때 실시간 잔량 감시 표출!
   5) 🌇🌃 [Case 79] 애프터마켓(16:00 ~ 19:59 EST) 및 데이마켓(20:00 ~ 03:59 EST) 구간 장외 익절감시 상태 표출!
+  6) 🛡️ [Case 75 & Case 81] httpx/httpcore 단순 조회 INFO 로그 WARNING 묵음화 · 텔레그램 전용 독립 httpx.AsyncClient 분리 운용 ·
+     HTTP 409 Conflict 또는 연속 3회 오류 시 클라이언트 자동 재생성 · 종료/재기동 시 롱폴링 소켓 즉시 반납(aclose) 및
+     불사조 감독 루프(Immortal Supervisor Wrapper)로 텔레그램 무응답(먹통) 현상 0% 원천 봉쇄!
 """
 
 from __future__ import annotations
@@ -47,11 +51,25 @@ import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    import httpx  # type: ignore
+
+    _HTTPX_AVAILABLE = True
+except Exception:
+    httpx = None  # type: ignore
+    _HTTPX_AVAILABLE = False
+
 from defense_plugin import (
     reconcile_stratum_with_broker_holdings_plugin,
     relock_stratum_on_bot_resume,
 )
-from plugin_updater import execute_git_pull_and_preflight
+from plugin_updater import (
+    execute_git_pull_and_preflight,
+    perform_self_restart_execv,
+    read_persisted_tg_offset_sync,
+    trigger_graceful_restart,
+    write_persisted_tg_offset_sync,
+)
 from quant_engine import (
     DEFAULT_GOLDEN_ALLIN_MODE,
     GOLDEN_ALLIN_MODES,
@@ -91,6 +109,10 @@ from toss_api import (
     safe_float,
     safe_int,
 )
+
+# NEW [Case 75]: 매 1.5초 API 조회 및 텔레그램 폴링 시 발생하는 httpx / httpcore 의 INFO 로그 폭탄을 WARNING 으로 묵음화
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger("toss_sniper.tg_ui_plugin")
 
@@ -840,16 +862,23 @@ def build_settlement_control_message(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] 텔레그램 명령어 및 콜백 비동기 컨트롤러 (TelegramCommandController)
+# [핵심 2] 텔레그램 명령어 및 콜백 비동기 컨트롤러 (TelegramCommandController — Case 81 불사조 폴링 탑재)
 # ---------------------------------------------------------------------------
 class TelegramCommandController:
     """
-    🚨 제1헌법 & Case 02, 15, 16, 62, 64, 65, 66, 67, 68, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80:
+    🚨 제1헌법 & Case 02, 15, 16, 62, 64, 65, 66, 67, 68, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81:
     main.py 의 SniperAppContext 와 정식 결속되는 텔레그램 봇 컨트롤러.
+    - [Case 81] 토스 API 세션과 완전히 분리된 텔레그램 전용 httpx.AsyncClient(미설치 시 urllib 비동기 폴백)를 운용하며,
+      HTTP 409 Conflict 또는 연속 통신 오류(3회 이상) 발생 시 기존 클라이언트를 즉시 닫고(aclose) 새 클라이언트를 자동 재생성한다.
+    - [Case 81] /update 실행 시 오프셋을 로컬 파일(.tg_update_offset_<slug>.dat), 3중 원장, 텔레그램 서버에 선행 커밋하고
+      3.5초 데몬 하드 워치독 및 os.execv 인플레이스 프로세스 교체로 100% 무중단 자가 재기동한다.
     """
 
     def __init__(self, context: Any) -> None:
         self.context: Any = context
+        self.base_dir: str = get_bot_base_dir(
+            getattr(context, "base_dir", None)
+        )
         self.bot_token: str = (
             os.environ.get("TELEGRAM_BOT_TOKEN")
             or os.environ.get("TG_BOT_TOKEN")
@@ -866,17 +895,63 @@ class TelegramCommandController:
         self._boot_epoch: float = time.time()
         self._last_update_id: int = 0
         try:
+            persisted_uid = read_persisted_tg_offset_sync(self.base_dir)
             st_init = self.context.ledger.get_state(TARGET_SYMBOL)
-            self._last_update_id = max(
-                0, safe_int(st_init.get("last_tg_update_id"), 0)
-            )
+            ledger_uid = safe_int(st_init.get("last_tg_update_id"), 0)
+            self._last_update_id = max(0, persisted_uid, ledger_uid)
         except Exception:
             self._last_update_id = 0
 
         self._awaiting_seed_input_chats: Dict[str, float] = {}
+        self._tg_http_client: Optional[Any] = None
+        self._tg_client_lock: asyncio.Lock = asyncio.Lock()
+        self._consecutive_poll_errors: int = 0
 
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}/{method}"
+
+    async def _ensure_tg_http_client(self) -> Optional[Any]:
+        """
+        # NEW [Case 81]:
+        토스 API 클라이언트와 완전히 독립된 텔레그램 전용 httpx.AsyncClient 세션을 생성/반환한다.
+        """
+        if not _HTTPX_AVAILABLE or httpx is None:
+            return None
+        async with self._tg_client_lock:
+            if self._tg_http_client is None or getattr(
+                self._tg_http_client, "is_closed", False
+            ):
+                self._tg_http_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(25.0, connect=8.0)
+                )
+            return self._tg_http_client
+
+    async def _close_tg_http_client(self) -> None:
+        """
+        # NEW [Case 81]:
+        종료/재기동 직전 또는 연속 오류 발생 시 열린 텔레그램 롱폴링 소켓을 즉시 닫아
+        신구 프로세스 간 HTTP 409 Conflict 충돌을 0%로 원천 차단한다.
+        """
+        async with self._tg_client_lock:
+            client = self._tg_http_client
+            self._tg_http_client = None
+            if client is not None:
+                try:
+                    await asyncio.wait_for(client.aclose(), timeout=2.0)
+                except Exception:
+                    pass
+
+    async def _recreate_tg_http_client(self, reason: str = "ERROR") -> None:
+        """
+        # NEW [Case 81]:
+        HTTP 409 Conflict 또는 연속 3회 이상 폴링 오류 감지 시 기존 소켓 풀을 폐기하고 새 세션을 구축한다.
+        """
+        logger.info(
+            "♻️ [Case 81 텔레그램 전용 HTTP 세션 자가 치유 재생성] 사유=%s",
+            reason,
+        )
+        await self._close_tg_http_client()
+        await self._ensure_tg_http_client()
 
     def _post_tg_sync(
         self,
@@ -904,7 +979,11 @@ class TelegramCommandController:
         except urllib.error.HTTPError as he:
             try:
                 err_raw = he.read().decode("utf-8", errors="replace")
-                return json.loads(err_raw)
+                parsed = json.loads(err_raw)
+                if isinstance(parsed, dict):
+                    parsed.setdefault("error_code", he.code)
+                    return parsed
+                return {"ok": False, "error_code": he.code}
             except Exception:
                 return {"ok": False, "error_code": he.code}
         except Exception as exc:
@@ -916,6 +995,43 @@ class TelegramCommandController:
         payload: Dict[str, Any],
         timeout_sec: float = 15.0,
     ) -> Dict[str, Any]:
+        """
+        # MODIFIED [Case 81]:
+        텔레그램 전용 httpx.AsyncClient 가 가용하면 비동기 커넥션 풀로 직접 호출하고,
+        예외 또는 미설치 환경에서는 asyncio.to_thread(_post_tg_sync) 로 안전 폴백한다.
+        """
+        if not self.bot_token:
+            return {"ok": False, "description": "missing-bot-token"}
+
+        if _HTTPX_AVAILABLE and httpx is not None:
+            try:
+                client = await self._ensure_tg_http_client()
+                if client is not None:
+                    resp = await asyncio.wait_for(
+                        client.post(
+                            self._api_url(method),
+                            json=payload,
+                            timeout=timeout_sec,
+                        ),
+                        timeout=timeout_sec + 3.0,
+                    )
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = {"ok": resp.status_code == 200}
+                    if isinstance(data, dict):
+                        if resp.status_code >= 400:
+                            data.setdefault("error_code", resp.status_code)
+                        return data
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "텔레그램 httpx(%s) 호출 예외 -> urllib 폴백: %s",
+                    method,
+                    exc,
+                )
+
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
@@ -927,17 +1043,38 @@ class TelegramCommandController:
             logger.debug("텔레그램 API(%s) 호출 예외: %s", method, exc)
             return {"ok": False, "description": str(exc)}
 
-    async def _ack_telegram_offset(self, target_update_id: int) -> None:
+    async def _persist_offset_locally(self, target_update_id: int) -> None:
+        """
+        # NEW [Case 81]:
+        최신 update_id 를 로컬 오프셋 파일(.tg_update_offset_<folder_slug>.dat)과 3중 원장에 비동기 영속화한다.
+        """
         uid = max(self._last_update_id, safe_int(target_update_id, 0))
         if uid <= 0:
             return
         self._last_update_id = uid
+        try:
+            await asyncio.to_thread(
+                write_persisted_tg_offset_sync, self.base_dir, uid
+            )
+        except Exception:
+            pass
         try:
             await self.context.ledger.update_state(
                 TARGET_SYMBOL, last_tg_update_id=uid
             )
         except Exception:
             pass
+
+    async def _ack_telegram_offset(self, target_update_id: int) -> None:
+        """
+        # MODIFIED [Case 81]:
+        로컬 오프셋 파일(.tg_update_offset_<folder_slug>.dat) + 3중 원장 + 텔레그램 서버(getUpdates offset=uid+1)
+        3곳에 오프셋을 즉시 확정 커밋하여 프로세스 재기동 직후 이전 명령어가 재실행되는 현상을 100% 차단한다.
+        """
+        uid = max(self._last_update_id, safe_int(target_update_id, 0))
+        if uid <= 0:
+            return
+        await self._persist_offset_locally(uid)
         try:
             await self._call_tg(
                 "getUpdates",
@@ -960,7 +1097,7 @@ class TelegramCommandController:
             if not isinstance(updates, list) or not updates:
                 return
 
-            max_stale_uid = 0
+            max_stale_uid = self._last_update_id
             for upd in updates:
                 if isinstance(upd, dict):
                     uid = safe_int(upd.get("update_id"), 0)
@@ -1357,6 +1494,14 @@ class TelegramCommandController:
         )
 
     async def _execute_manual_update_command(self, chat_id: str) -> None:
+        """
+        # MODIFIED [Case 62, Case 68, Case 75 & Case 81]:
+        1) /update 수신 즉시 오프셋을 로컬 파일(.tg_update_offset_<slug>.dat), 원장, 텔레그램 서버에 선행 커밋한다.
+        2) execute_git_pull_and_preflight() 로 최신 커밋 동기화 및 서브프로세스 검증을 수행한다.
+        3) 신규 커밋(changed == True)이 적용되었을 때는 구버전 os._exit(0) 대신
+           텔레그램 HTTP 세션을 닫고(_close_tg_http_client) Case 81 3.5초 하드 워치독 및
+           perform_self_restart_execv(os.execv + os._exit(1) 폴백)를 통해 무중단 인플레이스 자가 재기동한다!
+        """
         await self._ack_telegram_offset(self._last_update_id)
         await self.send_message(
             chat_id=chat_id,
@@ -1365,7 +1510,7 @@ class TelegramCommandController:
                 "🔸 GitHub 최신 코드 동기화 및 10대 코어 모듈 프리플라이트 검증 중..."
             ),
         )
-        upd_res = await execute_git_pull_and_preflight(self.context.base_dir)
+        upd_res = await execute_git_pull_and_preflight(self.base_dir)
         changed = False
         if isinstance(upd_res, tuple):
             ok = bool(upd_res[0]) if len(upd_res) >= 1 else False
@@ -1408,11 +1553,18 @@ class TelegramCommandController:
             chat_id=chat_id,
             text=(
                 "🚀 <b>[신규 업데이트 검증 통과]</b>\n"
-                "🔸 원장 데이터 100% 보존 상태로 잠시 후 스나이퍼 데몬을 재기동합니다..."
+                "🔸 원장 데이터 100% 보존 상태로 스나이퍼 데몬을 무중단 자가 재기동합니다..."
             ),
         )
-        await asyncio.sleep(0.5)
-        os._exit(0)
+        await self._close_tg_http_client()
+        trigger_graceful_restart(
+            context=self.context,
+            shutdown_event=getattr(self.context, "shutdown_event", None),
+            reason="MANUAL_TELEGRAM_UPDATE",
+            watchdog_delay_sec=3.5,
+        )
+        await asyncio.sleep(0.3)
+        perform_self_restart_execv(reason="MANUAL_TELEGRAM_UPDATE")
 
     # -----------------------------------------------------------------------
     # 메시지 및 콜백 디스패처 (/golden 모드 전환 및 /reset_profit 전용 대체)
@@ -1629,7 +1781,12 @@ class TelegramCommandController:
 
     async def run_polling_loop(self) -> None:
         """
-        텔레그램 getUpdates 비동기 롱폴링 루프 (기동 시 적체 큐 무조건부 일괄 소각 탑재)
+        🚨 [Case 81 (# MODIFIED) : 텔레그램 전용 클라이언트 불사조 폴링 루프 (Immortal Supervisor Wrapper)]:
+        1) 어떠한 네트워크 순단, HTTP 409 Conflict, JSON 파싱 오류, 핸들러 내부 예외가 발생하더라도
+           shutdown_event.is_set() 전에는 폴링 태스크가 절대 단독 사망하지 않는다.
+        2) HTTP 409 Conflict 또는 연속 3회 이상 통신 오류 감지 시 기존 httpx.AsyncClient 소켓 풀을 즉시 닫고
+           새 클라이언트로 자동 재생성한다.
+        3) 종료/재기동 시 finally 블록에서 열린 롱폴링 세션을 즉시 닫아(aclose) 다음 프로세스와의 충돌을 원천 차단한다.
         """
         if not self.bot_token:
             logger.warning(
@@ -1639,72 +1796,172 @@ class TelegramCommandController:
                 await asyncio.sleep(10.0)
             return
 
-        await self._flush_stale_updates_on_startup()
-        logger.info("📡 [텔레그램 관제탑 폴링 루프 가동 완료]")
+        # 최상위 불사조 감독 루프 (Immortal Supervisor Wrapper)
+        try:
+            while not self.context.shutdown_event.is_set():
+                try:
+                    await self._ensure_tg_http_client()
+                    await self._call_tg(
+                        "deleteWebhook",
+                        {"drop_pending_updates": False},
+                        timeout_sec=8.0,
+                    )
+                    await self._flush_stale_updates_on_startup()
+                    logger.info(
+                        "📡 [Case 81 불사조 텔레그램 관제탑 폴링 루프 가동 완료] (last_update_id=%d)",
+                        self._last_update_id,
+                    )
 
-        while not self.context.shutdown_event.is_set():
-            try:
-                payload: Dict[str, Any] = {
-                    "offset": self._last_update_id + 1,
-                    "timeout": 15,
-                    "allowed_updates": ["message", "callback_query"],
-                }
-                res = await self._call_tg(
-                    "getUpdates", payload, timeout_sec=20.0
-                )
-                if isinstance(res, dict) and bool(res.get("ok")):
-                    updates = res.get("result")
-                    if isinstance(updates, list):
-                        for upd in updates:
-                            if not isinstance(upd, dict):
-                                continue
-                            uid = safe_int(upd.get("update_id"), 0)
-                            if uid > self._last_update_id:
-                                self._last_update_id = uid
-                                try:
-                                    await self.context.ledger.update_state(
-                                        TARGET_SYMBOL, last_tg_update_id=uid
-                                    )
-                                except Exception:
-                                    pass
+                    while not self.context.shutdown_event.is_set():
+                        try:
+                            payload: Dict[str, Any] = {
+                                "offset": self._last_update_id + 1,
+                                "timeout": 15,
+                                "allowed_updates": [
+                                    "message",
+                                    "callback_query",
+                                ],
+                            }
+                            res = await self._call_tg(
+                                "getUpdates", payload, timeout_sec=20.0
+                            )
+                            if isinstance(res, dict) and bool(res.get("ok")):
+                                self._consecutive_poll_errors = 0
+                                updates = res.get("result")
+                                if isinstance(updates, list):
+                                    for upd in updates:
+                                        if self.context.shutdown_event.is_set():
+                                            break
+                                        if not isinstance(upd, dict):
+                                            continue
+                                        uid = safe_int(upd.get("update_id"), 0)
+                                        if uid > self._last_update_id:
+                                            await self._persist_offset_locally(
+                                                uid
+                                            )
 
-                            if isinstance(upd.get("callback_query"), dict):
-                                await self._handle_callback_query(
-                                    upd["callback_query"]
+                                        try:
+                                            if isinstance(
+                                                upd.get("callback_query"), dict
+                                            ):
+                                                await self._handle_callback_query(
+                                                    upd["callback_query"]
+                                                )
+                                            elif isinstance(
+                                                upd.get("message"), dict
+                                            ):
+                                                m_obj = upd["message"]
+                                                c_obj = (
+                                                    m_obj.get("chat")
+                                                    if isinstance(
+                                                        m_obj.get("chat"), dict
+                                                    )
+                                                    else {}
+                                                )
+                                                cid = str(
+                                                    c_obj.get("id")
+                                                    or self.chat_id
+                                                    or ""
+                                                ).strip()
+                                                if (
+                                                    self.chat_id
+                                                    and cid
+                                                    and cid != self.chat_id
+                                                ):
+                                                    continue
+                                                txt = str(
+                                                    m_obj.get("text") or ""
+                                                ).strip()
+                                                msg_date = safe_float(
+                                                    m_obj.get("date"), 0.0
+                                                )
+                                                if (
+                                                    msg_date > 0.0
+                                                    and msg_date
+                                                    < (self._boot_epoch - 1.0)
+                                                    and (
+                                                        txt.lower().startswith(
+                                                            "/update"
+                                                        )
+                                                        or txt
+                                                        == "🚀 시스템 업데이트"
+                                                    )
+                                                ):
+                                                    await self._ack_telegram_offset(
+                                                        uid
+                                                    )
+                                                    continue
+                                                if txt:
+                                                    await self._handle_command_or_text(
+                                                        chat_id=cid,
+                                                        raw_text=txt,
+                                                    )
+                                        except asyncio.CancelledError:
+                                            raise
+                                        except Exception as disp_exc:
+                                            logger.warning(
+                                                "⚠️ [Case 81 텔레그램 개별 메시지 처리 예외 격리(폴링 유지)]: %s",
+                                                disp_exc,
+                                            )
+                            else:
+                                self._consecutive_poll_errors += 1
+                                err_code = (
+                                    safe_int(res.get("error_code"), 0)
+                                    if isinstance(res, dict)
+                                    else 0
                                 )
-                            elif isinstance(upd.get("message"), dict):
-                                m_obj = upd["message"]
-                                c_obj = (
-                                    m_obj.get("chat")
-                                    if isinstance(m_obj.get("chat"), dict)
-                                    else {}
-                                )
-                                cid = str(
-                                    c_obj.get("id") or self.chat_id or ""
-                                ).strip()
-                                if self.chat_id and cid != self.chat_id:
-                                    continue
-                                txt = str(m_obj.get("text") or "").strip()
-                                msg_date = safe_float(m_obj.get("date"), 0.0)
                                 if (
-                                    msg_date > 0.0
-                                    and msg_date < (self._boot_epoch - 1.0)
-                                    and (
-                                        txt.lower().startswith("/update")
-                                        or txt == "🚀 시스템 업데이트"
-                                    )
+                                    err_code == 409
+                                    or self._consecutive_poll_errors >= 3
                                 ):
-                                    await self._ack_telegram_offset(uid)
-                                    continue
-                                if txt:
-                                    await self._handle_command_or_text(
-                                        chat_id=cid, raw_text=txt
+                                    await self._recreate_tg_http_client(
+                                        reason=f"POLL_FAIL_CODE_{err_code}_CNT_{self._consecutive_poll_errors}"
                                     )
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.debug("텔레그램 폴링 루프 일시 예외: %s", exc)
-                await asyncio.sleep(2.0)
+                                    self._consecutive_poll_errors = 0
+                                    await asyncio.sleep(3.0)
+                                else:
+                                    await asyncio.sleep(1.5)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as inner_exc:
+                            self._consecutive_poll_errors += 1
+                            if self._consecutive_poll_errors >= 3:
+                                await self._recreate_tg_http_client(
+                                    reason=f"INNER_EXC_{type(inner_exc).__name__}"
+                                )
+                                self._consecutive_poll_errors = 0
+                            logger.debug(
+                                "텔레그램 폴링 내부 루프 일시 예외(자가 치유): %s",
+                                inner_exc,
+                            )
+                            await asyncio.sleep(2.0)
+                except asyncio.CancelledError:
+                    break
+                except Exception as sup_exc:
+                    logger.warning(
+                        "🛡️ [Case 81 불사조 감독 루프 재기동] 텔레그램 폴링 치명 예외 감지 -> 3초 후 세션 재생성 복구: %s",
+                        sup_exc,
+                    )
+                    await self._recreate_tg_http_client(reason="SUPERVISOR_RECOVERY")
+                    await asyncio.sleep(3.0)
+        finally:
+            await self._close_tg_http_client()
+
+
+async def telegram_polling_loop(
+    context: Any, shutdown_event: Optional[asyncio.Event] = None
+) -> None:
+    """
+    # NEW [Case 81 호환 최상위 폴링 엔트리 함수]:
+    context.tg 가 존재하면 해당 인스턴스의 run_polling_loop() 를 호출하고,
+    없으면 TelegramCommandController(context) 를 생성하여 불사조 폴링 루프를 가동한다.
+    """
+    tg_obj = getattr(context, "tg", None)
+    if tg_obj is not None and hasattr(tg_obj, "run_polling_loop"):
+        await tg_obj.run_polling_loop()
+        return
+    ctrl = TelegramCommandController(context)
+    await ctrl.run_polling_loop()
 
 
 # 하위 호환 별칭 (타 모듈 임포트 호환 100% 보장)

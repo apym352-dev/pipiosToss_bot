@@ -4,7 +4,8 @@
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
 10대 코어 모듈(main_runtime.py + main.py 2분할 포함) 무디스크 인메모리 프리플라이트 컴파일 · AST 심볼 교차 검증 ·
-4배수 선제 스냅 치유기 · 텔레그램 잔류 큐 소각 · 폴더별 원장/환경변수 스냅샷 Dirty-Check 철벽 보존 및 무인 Git 업데이트 코어 모듈 (Step 11 / 11)
+4배수 선제 스냅 치유기 · 텔레그램 잔류 큐 소각 · 폴더별 원장/환경변수/오프셋 스냅샷 Dirty-Check 철벽 보존 ·
+무인 Git 업데이트 및 Case 81 커널 레벨 인플레이스 프로세스 자가 교체(os.execv + 3.5초 하드 워치독) 코어 모듈 (Step 01 / 04)
 - 제1헌법: 모든 파일 I/O 및 git/python 서브프로세스 실행을 asyncio.to_thread 로 비동기 격리 및 타임아웃 적용
 - 제3헌법: 구버전 폐기 파일(daymarket_sim_plugin.py, whipsaw_plugin.py, state_SOXS.json 등) 디스크 영구 소각
 - Case 07: 평일 04:00 ~ 16:05 EST 장중 백그라운드 무인 업데이트 재기동 전면 차단 및 systemd ExecStartPre 장중 락다운 지원
@@ -19,8 +20,8 @@
      즉시 강제 소각(_flush_telegram_pending_updates_sync)하고, 원격 저장소에 신규 커밋이 없을 때 로컬 수정본을 안전 보존!
 - 🚨 [Case 68 & Case 80 폴더 위치(base_dir) 기반 격리 & git reset --hard 원장(골든포켓·모드 설정 포함)/환경변수 증발 100% 차단 쉴드]:
   1) "/home/pipiosToss" 고정 경로 하드코딩 100% 영구 제거 -> 오직 현재 실행 폴더(base_dir)의 .env 와 원장만 참조
-  2) git reset --hard 실행 직전 해당 폴더 내 모든 원장(*ledger*.json, ledger_backups/*.json)과 환경설정(.env*, *config*.json)을
-     메모리에 스냅샷 보존하고, git reset --hard 직후 0.001초 내에 즉시 원자적 원상 복원
+  2) git reset --hard 실행 직전 해당 폴더 내 모든 원장(*ledger*.json, ledger_backups/*.json), 환경설정(.env*, *config*.json),
+     텔레그램 오프셋(.tg_update_offset_*.dat)을 메모리에 스냅샷 보존하고, git reset --hard 직후 0.001초 내에 즉시 원자적 원상 복원
      (git rm --cached --ignore-unmatch soxl_stratum_ledger.json 병행)하여
      장외 자동 업데이트로 인한 기록 초기화 및 타 폴더 원장 덮어쓰기 사고를 물리적으로 영구 봉쇄!
 - 🚨 [Case 75 클라우드 VM 디스크 고갈([Errno 28] No space left on device) 원천 차단 및 디스크 Write 90% 감축]:
@@ -31,6 +32,13 @@
      재작성(_restore_protected_local_files_sync)을 전면 스킵하고, 복원 시에도 바이트 Dirty-Check 적용!
   3) 프리플라이트 및 업데이트 전후 emergency_free_disk_space_sync() 로 고아 임시 파일(*.tmp.*, *.heal.tmp) 및
      __pycache__ 바이트코드 캐시를 자동 소각하여 디스크 블록 및 Inode 고갈을 원천 방어!
+- 🚨 [Case 81 장외 무인 자동 업데이트(run_auto_update_loop) 및 수동 /update 직후 텔레그램 먹통(Deaf Zombie Process) ·
+  asyncio.to_thread 종료 데드락 · systemd Exit Code 0 재기동 거부 원천 차단]:
+  1) 구버전 os._exit(0) 호출 시 systemd(Restart=on-failure)가 정상 종료로 판정해 봇을 다시 켜주지 않던 치명적 결함을 영구 소각하고,
+     perform_self_restart_execv() 를 통해 os.execv(sys.executable, [sys.executable] + sys.argv) 로 현재 PID 메모리에
+     최신 파이썬 인터프리터와 최신 코드를 즉시 덮어씌워 무중단 인플레이스 자가 교체를 수행한다(실패 시 os._exit(1) 강제 재기동 폴백).
+  2) arm_hard_restart_watchdog(3.5초) 데몬 스레드 워치독 타이머를 동시 가동하여, 이벤트 루프나 백그라운드 스레드가 종료 중 블로킹되더라도
+     3.5초 내에 100% 강제 execv 자가 교체를 완수함으로써 GCP 수동 재시작 필요성을 0%로 소멸시킨다.
 """
 
 from __future__ import annotations
@@ -47,6 +55,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -58,6 +67,7 @@ from toss_api import (
     SoxlStratumLedger,
     emergency_free_disk_space_sync,
     get_bot_base_dir,
+    get_folder_slug,
     resolve_folder_isolated_ledger_paths,
     safe_int,
 )
@@ -91,9 +101,244 @@ DEPRECATED_LEGACY_FILES: Tuple[str, ...] = (
 
 _TG_TOKEN_STRICT_RE = re.compile(r"\b(\d{8,12}:[A-Za-z0-9_-]{25,60})\b")
 
+# NEW [Case 81]: 중복 execv 방지를 위한 프로세스 전역 락 및 워치독 상태
+_RESTART_EXEC_LOCK = threading.Lock()
+_RESTART_WATCHDOG_TIMER: Optional[threading.Timer] = None
+
 
 # ---------------------------------------------------------------------------
-# [핵심 0] 폴더 위치(base_dir) 전용 텔레그램 적체 큐 선제 강제 소각기 (Case 68 & Case 75)
+# [핵심 0-A · NEW Case 81] 커널 레벨 인플레이스 프로세스 자가 교체(os.execv) 및 3.5초 데몬 하드 워치독
+# ---------------------------------------------------------------------------
+def resolve_tg_offset_dat_path(base_dir: Optional[str] = None) -> str:
+    """
+    # NEW [Case 81]:
+    폴더별 텔레그램 update_id 오프셋 전용 영속화 파일 경로(<base_dir>/.tg_update_offset_<folder_slug>.dat)를 반환한다.
+    """
+    target_dir = get_bot_base_dir(base_dir)
+    slug = get_folder_slug(target_dir)
+    return os.path.join(target_dir, f".tg_update_offset_{slug}.dat")
+
+
+def read_persisted_tg_offset_sync(base_dir: Optional[str] = None) -> int:
+    """
+    # NEW [Case 81]:
+    폴더별 .tg_update_offset_<folder_slug>.dat 파일과 3중 원장(last_tg_update_id) 중 가장 큰 update_id 를 읽어 반환한다.
+    """
+    target_dir = get_bot_base_dir(base_dir)
+    max_uid = 0
+    dat_fp = resolve_tg_offset_dat_path(target_dir)
+    if os.path.isfile(dat_fp):
+        try:
+            with GlobalThrottle.get_file_lock(dat_fp):
+                with open(dat_fp, "r", encoding="utf-8", errors="ignore") as rf:
+                    raw_txt = rf.read().strip()
+            max_uid = max(max_uid, safe_int(raw_txt, 0))
+        except Exception:
+            pass
+
+    primary_fp, legacy_fp, backup_fp, _ = resolve_folder_isolated_ledger_paths(
+        base_dir=target_dir
+    )
+    for l_fp in (primary_fp, legacy_fp, backup_fp):
+        if os.path.isfile(l_fp):
+            try:
+                with GlobalThrottle.get_file_lock(l_fp):
+                    with open(l_fp, "r", encoding="utf-8") as rf:
+                        ldata = json.load(rf)
+                if isinstance(ldata, dict) and isinstance(
+                    ldata.get("SOXL"), dict
+                ):
+                    max_uid = max(
+                        max_uid,
+                        safe_int(ldata["SOXL"].get("last_tg_update_id"), 0),
+                    )
+            except Exception:
+                pass
+    return max_uid
+
+
+def write_persisted_tg_offset_sync(
+    base_dir: Optional[str], update_id: int
+) -> None:
+    """
+    # NEW [Case 81 & Case 75]:
+    폴더별 .tg_update_offset_<folder_slug>.dat 파일에 최신 update_id 를 Dirty-Check 후 원자적으로 기록한다.
+    """
+    uid = safe_int(update_id, 0)
+    if uid <= 0:
+        return
+    target_dir = get_bot_base_dir(base_dir)
+    dat_fp = resolve_tg_offset_dat_path(target_dir)
+    try:
+        with GlobalThrottle.get_file_lock(dat_fp):
+            if os.path.isfile(dat_fp):
+                try:
+                    with open(dat_fp, "r", encoding="utf-8") as rf:
+                        cur_val = safe_int(rf.read().strip(), 0)
+                    if uid <= cur_val:
+                        return
+                except Exception:
+                    pass
+            tmp_fp = f"{dat_fp}.tmp.{os.getpid()}.{threading.get_ident()}"
+            try:
+                with open(tmp_fp, "w", encoding="utf-8") as wf:
+                    wf.write(f"{uid}\n")
+                    wf.flush()
+                    os.fsync(wf.fileno())
+                os.replace(tmp_fp, dat_fp)
+            finally:
+                if os.path.exists(tmp_fp):
+                    try:
+                        os.remove(tmp_fp)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def perform_self_restart_execv(reason: str = "AUTO_UPDATE") -> None:
+    """
+    🚨 [Case 81 핵심 (# NEW) : 커널 레벨 인플레이스 프로세스 자가 교체기]:
+    장외 무인 자동 업데이트(run_auto_update_loop) 또는 수동 /update 완료 후 프로세스를 재기동할 때:
+    1) 구버전 os._exit(0) 은 종료 코드 0(정상 종료)을 반환하여 systemd(Restart=on-failure)가 재시작을 거부하고
+       봇이 영구 정지(Dead)되는 원인이었으므로 이를 100% 영구 폐기한다.
+    2) 표준 출력/에러 버퍼를 플러시한 직후 os.execv(sys.executable, [sys.executable] + sys.argv) 를 호출하여
+       현재 살아있는 프로세스(동일 PID) 메모리에 최신 파이썬 인터프리터와 최신 코드를 즉시 덮어씌워 무중단 자가 교체한다.
+    3) 만약 OS 제약으로 os.execv 가 예외를 일으킬 경우에는 반드시 비정상 종료 코드인 os._exit(1) (Exit Code 1)을 호출하여
+       systemd 의 Restart=on-failure 및 Restart=always 양쪽 모두에서 100% 강제 재기동되도록 이중 보장한다!
+    """
+    with _RESTART_EXEC_LOCK:
+        target_dir = get_bot_base_dir()
+        logger.warning(
+            "🔄 [Case 81 커널 레벨 인플레이스 자가 재기동(os.execv) 집행] 사유=%s · PID=%d · 폴더=%s",
+            reason,
+            os.getpid(),
+            target_dir,
+        )
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+        try:
+            os.chdir(target_dir)
+        except Exception:
+            pass
+
+        python_exe = sys.executable or "/usr/bin/python3"
+        raw_argv = (
+            list(sys.argv)
+            if sys.argv
+            else [os.path.join(target_dir, "main.py")]
+        )
+        if not raw_argv[0] or "--verify-only" in raw_argv:
+            script_path = os.path.join(target_dir, "main.py")
+            exec_argv = [python_exe, script_path]
+        else:
+            script_arg = raw_argv[0]
+            if not os.path.isabs(script_arg):
+                cand_abs = os.path.join(target_dir, script_arg)
+                if os.path.isfile(cand_abs):
+                    script_arg = cand_abs
+            exec_argv = [python_exe, script_arg] + raw_argv[1:]
+
+        try:
+            os.execv(python_exe, exec_argv)
+        except Exception as exc:
+            logger.error(
+                "🚨 [Case 81 os.execv 호출 예외 -> os._exit(1) 비정상 종료 코드로 systemd 강제 재기동 폴백]: %s",
+                exc,
+            )
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except Exception:
+                pass
+            os._exit(1)
+
+
+def arm_hard_restart_watchdog(
+    delay_sec: float = 3.5,
+    reason: str = "AUTO_UPDATE",
+) -> threading.Timer:
+    """
+    🚨 [Case 81 핵심 (# NEW) : 비동기 종료 데드락(Deaf Zombie Process) 타파용 3.5초 데몬 하드 워치독]:
+    업데이트 직후 shutdown_event.set() 이 호출되었을 때 텔레그램 폴링 루프만 먼저 종료되고
+    백그라운드 asyncio.to_thread 워커 스레드가 남아 asyncio.run() 의 shutdown_default_executor() 에서
+    프로세스가 죽지 않고 멈추는 '귀머거리 좀비(Deaf Zombie)' 현상을 원천 봉쇄한다.
+    3.5초 내에 메인 루프가 perform_self_restart_execv() 에 도달하지 못하면
+    독립 커널 데몬 스레드가 강제로 os.execv() (실패 시 os._exit(1))를 집행한다!
+    """
+    global _RESTART_WATCHDOG_TIMER
+    safe_delay = max(1.0, min(15.0, float(delay_sec)))
+
+    def _watchdog_callback() -> None:
+        logger.warning(
+            "⏰ [Case 81 하드 워치독 타이머(%.1fs) 격발] 비동기 종료 지연 감지 -> 즉시 os.execv 인플레이스 교체 강제 집행 (reason=%s)",
+            safe_delay,
+            reason,
+        )
+        perform_self_restart_execv(reason=f"{reason}_WATCHDOG_TIMEOUT")
+
+    timer = threading.Timer(safe_delay, _watchdog_callback)
+    timer.daemon = True
+    timer.start()
+    _RESTART_WATCHDOG_TIMER = timer
+    logger.info(
+        "🛡️ [Case 81 하드 워치독 타이머 장착 완료] %.1f초 내 무응답 시 강제 os.execv 교체 (reason=%s)",
+        safe_delay,
+        reason,
+    )
+    return timer
+
+
+def trigger_graceful_restart(
+    context: Any,
+    shutdown_event: Optional[asyncio.Event] = None,
+    reason: str = "AUTO_UPDATE",
+    watchdog_delay_sec: float = 3.5,
+) -> None:
+    """
+    🚨 [Case 81 (# NEW) : 재기동 플래그 설정 + 3.5초 하드 워치독 가동 + 이벤트 루프 즉시 깨우기 통합 점화기]:
+    context.restart_requested = True 설정과 동시에 3.5초 데몬 하드 워치독을 장착하고
+    shutdown_event 및 wakeup_event 를 깨워 즉시 재기동 시퀀스로 진입시킨다.
+    """
+    if context is not None:
+        try:
+            setattr(context, "restart_requested", True)
+            setattr(context, "restart_reason", str(reason))
+        except Exception:
+            pass
+
+    arm_hard_restart_watchdog(delay_sec=watchdog_delay_sec, reason=reason)
+
+    ev = shutdown_event or (
+        getattr(context, "shutdown_event", None)
+        if context is not None
+        else None
+    )
+    if ev is not None:
+        try:
+            ev.set()
+        except Exception:
+            pass
+
+    wake_ev = (
+        getattr(context, "wakeup_event", None) if context is not None else None
+    )
+    if wake_ev is not None:
+        try:
+            wake_ev.set()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# [핵심 0-B] 폴더 위치(base_dir) 전용 텔레그램 적체 큐 선제 강제 소각기 (Case 68, Case 75 & Case 81)
 # ---------------------------------------------------------------------------
 def _discover_bot_token_sync(base_dir: Optional[str] = None) -> str:
     """
@@ -131,7 +376,7 @@ def _discover_bot_token_sync(base_dir: Optional[str] = None) -> str:
 
 def _update_ledger_tg_offset_sync(ledger_fp: str, max_uid: int) -> None:
     """
-    # [Case 75]:
+    # [Case 75 & Case 81]:
     1) max_uid <= cur_saved 이면 디스크 쓰기를 수행하지 않고 즉시 반환한다.
     2) 쓰기 도중 OSError(errno.ENOSPC == 28) 발생 시 미완성 .tmp 파일을 즉시 제거하고
        emergency_free_disk_space_sync() 로 고아 파일 및 캐시를 청소한 뒤 재시도한다.
@@ -195,10 +440,11 @@ def _flush_telegram_pending_updates_sync(
     base_dir: Optional[str] = None,
 ) -> int:
     """
+    # MODIFIED [Case 81]:
     데몬 기동 전(ExecStartPre / --verify-only) 또는 /update 실행 직후에
     텔레그램 서버 큐에 남아 있는 모든 미확인 메시지(/start, /update, callback_query 등)의
     최대 update_id 를 조회하여 즉시 `offset = max_update_id + 1` 로 소비 확정(Ack)하고
-    해당 폴더의 3중 원장(`primary_path`, `legacy_path`, `backup_path`)의 `last_tg_update_id` 에 기록한다.
+    폴더별 오프셋 파일(`.tg_update_offset_<folder_slug>.dat`) 및 3중 원장의 `last_tg_update_id` 에 동시 기록한다.
     """
     target_dir = get_bot_base_dir(base_dir)
     bot_token = _discover_bot_token_sync(target_dir)
@@ -221,7 +467,7 @@ def _flush_telegram_pending_updates_sync(
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw) if raw else {"ok": True}
 
-    max_uid = 0
+    max_uid = read_persisted_tg_offset_sync(target_dir)
     try:
         _call_tg_api("deleteWebhook", {"drop_pending_updates": False})
     except Exception:
@@ -246,6 +492,7 @@ def _flush_telegram_pending_updates_sync(
         logger.debug("텔레그램 큐 선제 소각 예외(무시): %s", exc)
 
     if max_uid > 0:
+        write_persisted_tg_offset_sync(target_dir, max_uid)
         primary_fp, legacy_fp, backup_fp, _ = (
             resolve_folder_isolated_ledger_paths(base_dir=target_dir)
         )
@@ -256,16 +503,16 @@ def _flush_telegram_pending_updates_sync(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 0-B · Case 68, Case 75 & Case 80] git reset --hard 실행 전후 폴더별 원장 & .env 철벽 보호기 (바이트 Dirty-Check 탑재)
+# [핵심 0-C · Case 68, Case 75, Case 80 & Case 81] git reset --hard 실행 전후 폴더별 원장 · .env · 오프셋 철벽 보호기
 # ---------------------------------------------------------------------------
 def _snapshot_protected_local_files_sync(target_dir: str) -> Dict[str, bytes]:
     """
-    🚨 Case 68, Case 75 & Case 80:
+    🚨 Case 68, Case 75, Case 80 & Case 81 (# MODIFIED):
     git reset --hard 가 실행되기 직전에 현재 폴더(target_dir) 내의:
     1) 고아 임시 파일(*.tmp.*) 및 __pycache__ 선제 청소로 여유 공간 확보
     2) 3중 안전 원장(SoxlStratumLedger) 선행 동기화 실행 (Dirty-Check 로 변경된 경우에만 기록)
-    3) 모든 `*ledger*.json` 파일, `ledger_backups/*.json` 파일, `.env*` 및 `*config*.json`, `secrets.json`
-       파일의 원본 바이트(bytes)를 메모리에 스냅샷으로 보존한다.
+    3) 모든 `*ledger*.json` 파일, `ledger_backups/*.json` 파일, `.env*`, `*config*.json`, `secrets.json` 및
+       `.tg_update_offset*.dat` 파일의 원본 바이트(bytes)를 메모리에 스냅샷으로 보존한다.
     """
     abs_dir = get_bot_base_dir(target_dir)
     emergency_free_disk_space_sync(
@@ -280,6 +527,7 @@ def _snapshot_protected_local_files_sync(target_dir: str) -> Dict[str, bytes]:
     patterns = (
         os.path.join(abs_dir, "*ledger*.json"),
         os.path.join(abs_dir, ".env*"),
+        os.path.join(abs_dir, ".tg_update_offset*.dat"),
         os.path.join(abs_dir, "*config*.json"),
         os.path.join(abs_dir, "secrets.json"),
         os.path.join(abs_dir, "ledger_backups", "*.json"),
@@ -677,7 +925,7 @@ def verify_all_modules_compile(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 4] 스마트 Git 동기화 · Case 68 원장 철벽 보존 쉴드 · Case 75 불필요 복원 쓰기 제거 및 독립 서브프로세스 검증
+# [핵심 4] 스마트 Git 동기화 · Case 68/81 원장·오프셋 철벽 보존 쉴드 · Case 75 불필요 복원 쓰기 제거 및 독립 서브프로세스 검증
 # ---------------------------------------------------------------------------
 def _run_cmd_sync(
     cmd: List[str], cwd: str, timeout_sec: float = 30.0
@@ -700,14 +948,14 @@ def _execute_git_pull_and_preflight_sync(
     base_dir: Optional[str] = None,
 ) -> Tuple[bool, str, bool]:
     """
-    🚨 Case 62, Case 68, Case 75 & Case 80 [장외 업데이트 시 로컬 원장·환경변수 증발 원천 차단 & 디스크 Write 최소화]:
+    🚨 Case 62, Case 68, Case 75, Case 80 & Case 81 [장외 업데이트 시 로컬 원장·환경변수·오프셋 증발 원천 차단 & 디스크 Write 최소화]:
     1) 실행 즉시 `_flush_telegram_pending_updates_sync()` 로 텔레그램 서버의 미확인 `/update` 큐를 선제 소각하고,
        `emergency_free_disk_space_sync()` 로 고아 `.tmp.*` 파일 및 `__pycache__` 를 청소하여 디스크 여유 공간을 확보한다.
     2) `_snapshot_protected_local_files_sync(target_dir)` 를 호출하여 현재 폴더의 모든 `*ledger*.json`,
-       `ledger_backups/*.json`, `.env*`, `*config*.json` 파일을 메모리에 스냅샷 보존한다.
+       `ledger_backups/*.json`, `.env*`, `.tg_update_offset*.dat`, `*config*.json` 파일을 메모리에 스냅샷 보존한다.
     3) `git fetch --all --prune` 후 원격 저장소에 신규 커밋이 실제로 존재할 때(`remote_ahead > 0`)만
        `git reset --hard origin/<branch>` 를 수행하고, 직후 0.001초 내에 `_restore_protected_local_files_sync()` 로
-       로컬 원장과 `.env` 파일을 원상 복원한다!
+       로컬 원장과 `.env`, `.tg_update_offset*.dat` 파일을 원상 복원한다!
     4) 구버전 RAM 캐시(sys.modules) 간섭 및 `.pyc` 디스크 생성을 차단하기 위해
        `[sys.executable, "-B", updater_script, "--verify-only", "--base-dir", target_dir]` 를 독립 서브프로세스로 실행한다!
     5) 서브프로세스 검증 실패 시 즉시 이전 정상 커밋 해시로 자동 롤백하고 로컬 원장을 재복원한다.
@@ -893,7 +1141,7 @@ async def execute_git_pull_and_preflight(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 5] 백그라운드 무인 자동 업데이트 루프 (Case 07: 장중 재기동 전면 차단)
+# [핵심 5] 백그라운드 무인 자동 업데이트 루프 (Case 07: 장중 재기동 차단 & Case 81: os.execv 인플레이스 교체)
 # ---------------------------------------------------------------------------
 def _is_weekday_market_busy_est(now_est: Optional[datetime] = None) -> bool:
     """
@@ -912,10 +1160,13 @@ async def run_auto_update_loop(
     interval_sec: float = 3600.0,
 ) -> None:
     """
+    # MODIFIED [Case 07, Case 68, Case 75 & Case 81]:
     백그라운드 무인 자동 업데이트 워커 (main_runtime.py / main.py 에서 정식 임포트):
     - 평일 04:00 ~ 16:05 EST 장중에는 절대 재기동하지 않고 대기한다 (Case 07).
     - 장외 시간대에 원격 저장소에 새로운 커밋이 감지되고 프리플라이트 검증을 통과했을 때만
-      해당 폴더의 3중 원장 및 .env 를 100% 보존한 상태로 안전하게 프로세스를 재기동한다 (Case 68 & Case 75).
+      해당 폴더의 3중 원장, .env, .tg_update_offset 파일을 100% 보존한 상태로
+      Case 81 커널 레벨 인플레이스 자가 교체(os.execv + 3.5초 하드 워치독)를 통해 무중단 재기동한다!
+      (기존 os._exit(0) 으로 인해 systemd Restart=on-failure 환경에서 봇이 영구 사망하던 버그 100% 제거)
     """
     wait_s = max(300.0, float(interval_sec or 3600.0))
     base_dir = get_bot_base_dir(getattr(context, "base_dir", None))
@@ -928,6 +1179,9 @@ async def run_auto_update_loop(
             break
         except asyncio.TimeoutError:
             pass
+
+        if context.shutdown_event.is_set():
+            break
 
         now_est = datetime.now(EST_TZ)
         if _is_weekday_market_busy_est(now_est):
@@ -945,25 +1199,47 @@ async def run_auto_update_loop(
         try:
             ok, msg, changed = await execute_git_pull_and_preflight(base_dir)
             if ok and changed:
-                logger.info(
-                    "🚀 [장외 무인 자동 업데이트 검증 통과] %s -> 재기동 수행",
+                logger.warning(
+                    "🚀 [Case 81 장외 무인 자동 업데이트 검증 통과] %s -> 3.5초 워치독 및 os.execv 인플레이스 자가 재기동 개시",
                     msg,
                 )
                 if hasattr(context, "send_slim_alert"):
-                    await context.send_slim_alert(
-                        title="🚀 [장외 자동 업데이트 완료]",
-                        body=f"{msg} · 데몬을 자동 재기동합니다.",
-                    )
-                await asyncio.sleep(0.5)
-                os._exit(0)
+                    try:
+                        await asyncio.wait_for(
+                            context.send_slim_alert(
+                                title="🚀 [장외 자동 업데이트 완료]",
+                                body=f"{msg} · 최신 엔진으로 무중단 자가 재기동합니다.",
+                            ),
+                            timeout=5.0,
+                        )
+                    except Exception:
+                        pass
+
+                # 🚨 Case 81: 3.5초 데몬 하드 워치독 장착 및 종료 시그널 점화 후 즉시 인플레이스 교체 수행
+                trigger_graceful_restart(
+                    context=context,
+                    shutdown_event=getattr(context, "shutdown_event", None),
+                    reason="OFF_HOURS_AUTO_UPDATE",
+                    watchdog_delay_sec=3.5,
+                )
+                await asyncio.sleep(0.4)
+                perform_self_restart_execv(reason="OFF_HOURS_AUTO_UPDATE")
+                break
         except asyncio.CancelledError:
             break
         except Exception as exc:
             logger.debug("무인 업데이트 점검 루프 예외: %s", exc)
 
 
+# 하위 호환 별칭 (타 모듈 및 프롬프트 심볼 완벽 호환)
+auto_update_loop = run_auto_update_loop
+start_auto_update_loop = run_auto_update_loop
+background_auto_update_loop = run_auto_update_loop
+purge_obsolete_files_sync = purge_deprecated_legacy_files
+
+
 # ---------------------------------------------------------------------------
-# CLI 엔트리포인트 (`--verify-only` 독립 검증 및 `systemd ExecStartPre` Case 07/68/75 호환)
+# CLI 엔트리포인트 (`--verify-only` 독립 검증 및 `systemd ExecStartPre` Case 07/68/75/81 호환)
 # ---------------------------------------------------------------------------
 def _cli_main() -> int:
     parser = argparse.ArgumentParser(

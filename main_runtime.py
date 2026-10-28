@@ -8,10 +8,11 @@
   3) 폴더별 3중 원장 인스턴스 팩토리(_instantiate_stratum_ledger · Case 68) 및 주말 휴장 판별(_check_weekend_nyse_closed_dynamic · Case 01, 79)
   4) 100% 벡터화 1분봉/일봉 지표 및 실시간 틱 Wilder's RSI(14) 무손실 직결(_compute_candle_metrics_dynamic · Case 80 RSI 50.0 고정 버그 영구 소각)
   5) 폴더 위치(base_dir) 전용 텔레그램 토큰·채팅방 ID 자동 탐색기(_discover_telegram_credentials · Case 68)
-  6) 내장형 사용자 중심 초슬림 텔레그램 롱폴링/관제탑 브릿지(_AdaptiveTelegramBridge · tg_ui_plugin 단일 렌더러 직결 ·
+  6) 내장형 사용자 중심 초슬림 텔레그램 불사조 롱폴링/관제탑 브릿지(_AdaptiveTelegramBridge · tg_ui_plugin 단일 렌더러 직결 ·
      /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행 ·
-     전술 제어반 황금시간[07:00~07:50 EST & RSI <= 19.0] 전액매수 모드 선택기[기본값 NONE(OFF) ↔ POCKET_ALLIN ↔ GRID_L1_ALLIN] 완벽 지원 · Case 64, 80)
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온
+     전술 제어반 황금시간[07:00~07:50 EST & RSI <= 19.0] 전액매수 모드 선택기[기본값 NONE(OFF) ↔ POCKET_ALLIN ↔ GRID_L1_ALLIN] 완벽 지원 ·
+     Case 75 httpx/httpcore INFO 로그 묵음화 & Case 81 전용 httpx.AsyncClient 자동 재생성 불사조 폴링 · 오프셋 파일 선행 영속화 · os.execv 인플레이스 자가 교체 탑재)
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 81 전수 락온
 """
 
 from __future__ import annotations
@@ -33,6 +34,14 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 
+try:
+    import httpx  # type: ignore
+
+    _HTTPX_AVAILABLE = True
+except Exception:
+    httpx = None  # type: ignore
+    _HTTPX_AVAILABLE = False
+
 import defense_plugin
 import plugin_updater
 import quant_engine
@@ -40,7 +49,14 @@ import quant_indicators_plugin
 import tg_ui_plugin
 import toss_api
 from defense_plugin import reconcile_stratum_with_broker_holdings_plugin
-from plugin_updater import verify_all_modules_compile
+from plugin_updater import (
+    execute_git_pull_and_preflight,
+    perform_self_restart_execv,
+    read_persisted_tg_offset_sync,
+    trigger_graceful_restart,
+    verify_all_modules_compile,
+    write_persisted_tg_offset_sync,
+)
 from quant_engine import (
     DEFAULT_GOLDEN_ALLIN_MODE,
     GOLDEN_ALLIN_MODES,
@@ -69,6 +85,10 @@ from toss_api import (
     safe_float,
     safe_int,
 )
+
+# NEW [Case 75]: 매 1.5초 시세 조회 및 폴링 시 systemd-journald 디스크 쓰기를 유발하는 httpx / httpcore INFO 로그를 WARNING 으로 고정
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger("toss_sniper.main_runtime")
 
@@ -1240,34 +1260,88 @@ def _discover_telegram_credentials(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 5] 내장형 텔레그램 브릿지 (_AdaptiveTelegramBridge — tg_ui_plugin 렌더러 직결 & Case 80 완벽 통합)
+# [핵심 5] 내장형 텔레그램 브릿지 (_AdaptiveTelegramBridge — tg_ui_plugin 렌더러 직결 & Case 80/81 완벽 통합)
 # ---------------------------------------------------------------------------
 class _AdaptiveTelegramBridge:
     """
+    # MODIFIED [Case 62 ~ 81]:
     tg_ui_plugin 의 4대 관제 보드 렌더러(build_start_schedule_message, build_avwap_radar_message,
     build_sync_instruction_message, build_settlement_control_message)를 단일 소스로 재사용하여
-    코드 중복을 제거하고, getUpdates 롱폴링 + /start, /avwap, /sync, /settlement, /golden, /reset_profit, /update +
-    황금시간 전액매수 모드 전환 콜백(toggle_golden_allin_mode · 기본값 OFF)을 완벽 수행하는 컨트롤러 (Case 62 ~ 80).
+    코드 중복을 제거하고,
+    - [Case 81] 토스 API 클라이언트와 완전히 독립된 텔레그램 전용 httpx.AsyncClient 세션 운용 및
+      HTTP 409 Conflict / 연속 3회 오류 시 세션 자동 재생성 불사조 롱폴링(Immortal Supervisor Wrapper)
+    - [Case 81] 폴더별 오프셋 파일(.tg_update_offset_<folder_slug>.dat) + 3중 원장 + 서버 3중 선행 영속화
+    - [Case 81] /update 완료 후 구버전 os._exit(0) 대신 3.5초 하드 워치독 및 perform_self_restart_execv(os.execv)로
+      100% 무중단 자가 교체 수행!
     """
 
     def __init__(self, context: Any) -> None:
         self.context: Any = context
+        self.base_dir: str = get_bot_base_dir(
+            getattr(context, "base_dir", None)
+        )
         self.bot_token, self.chat_id = _discover_telegram_credentials(
-            context.base_dir, getattr(context, "api", None)
+            self.base_dir, getattr(context, "api", None)
         )
         self._boot_epoch: float = time.time()
         self._last_update_id: int = 0
         try:
+            persisted_uid = read_persisted_tg_offset_sync(self.base_dir)
             st_init = self.context.ledger.get_state(TARGET_SYMBOL)
-            self._last_update_id = max(
-                0, safe_int(st_init.get("last_tg_update_id"), 0)
-            )
+            ledger_uid = safe_int(st_init.get("last_tg_update_id"), 0)
+            self._last_update_id = max(0, persisted_uid, ledger_uid)
         except Exception:
             self._last_update_id = 0
         self._awaiting_seed_input_chats: Dict[str, float] = {}
+        self._tg_http_client: Optional[Any] = None
+        self._tg_client_lock: asyncio.Lock = asyncio.Lock()
+        self._consecutive_poll_errors: int = 0
 
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}/{method}"
+
+    async def _ensure_tg_http_client(self) -> Optional[Any]:
+        """
+        # NEW [Case 81]:
+        토스 API 세션과 분리된 텔레그램 전용 httpx.AsyncClient 를 생성/반환한다.
+        """
+        if not _HTTPX_AVAILABLE or httpx is None:
+            return None
+        async with self._tg_client_lock:
+            if self._tg_http_client is None or getattr(
+                self._tg_http_client, "is_closed", False
+            ):
+                self._tg_http_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(25.0, connect=8.0)
+                )
+            return self._tg_http_client
+
+    async def _close_tg_http_client(self) -> None:
+        """
+        # NEW [Case 81]:
+        종료/재기동 직전 또는 연속 오류 발생 시 열린 텔레그램 롱폴링 소켓을 즉시 닫아
+        신구 프로세스 간 HTTP 409 Conflict 충돌을 원천 차단한다.
+        """
+        async with self._tg_client_lock:
+            client = self._tg_http_client
+            self._tg_http_client = None
+            if client is not None:
+                try:
+                    await asyncio.wait_for(client.aclose(), timeout=2.0)
+                except Exception:
+                    pass
+
+    async def _recreate_tg_http_client(self, reason: str = "ERROR") -> None:
+        """
+        # NEW [Case 81]:
+        HTTP 409 Conflict 또는 연속 3회 이상 폴링 오류 감지 시 기존 소켓 풀을 폐기하고 새 세션을 구축한다.
+        """
+        logger.info(
+            "♻️ [Case 81 내장 텔레그램 전용 HTTP 세션 자가 치유 재생성] 사유=%s",
+            reason,
+        )
+        await self._close_tg_http_client()
+        await self._ensure_tg_http_client()
 
     def _post_tg_sync(
         self,
@@ -1295,7 +1369,11 @@ class _AdaptiveTelegramBridge:
         except urllib.error.HTTPError as he:
             try:
                 err_raw = he.read().decode("utf-8", errors="replace")
-                return json.loads(err_raw)
+                parsed = json.loads(err_raw)
+                if isinstance(parsed, dict):
+                    parsed.setdefault("error_code", he.code)
+                    return parsed
+                return {"ok": False, "error_code": he.code}
             except Exception:
                 return {"ok": False, "error_code": he.code}
         except Exception as exc:
@@ -1307,6 +1385,43 @@ class _AdaptiveTelegramBridge:
         payload: Dict[str, Any],
         timeout_sec: float = 15.0,
     ) -> Dict[str, Any]:
+        """
+        # MODIFIED [Case 81]:
+        텔레그램 전용 httpx.AsyncClient 가 가용하면 비동기 커넥션 풀로 직접 호출하고,
+        예외 또는 미설치 환경에서는 asyncio.to_thread(_post_tg_sync) 로 안전 폴백한다.
+        """
+        if not self.bot_token:
+            return {"ok": False, "description": "missing-bot-token"}
+
+        if _HTTPX_AVAILABLE and httpx is not None:
+            try:
+                client = await self._ensure_tg_http_client()
+                if client is not None:
+                    resp = await asyncio.wait_for(
+                        client.post(
+                            self._api_url(method),
+                            json=payload,
+                            timeout=timeout_sec,
+                        ),
+                        timeout=timeout_sec + 3.0,
+                    )
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = {"ok": resp.status_code == 200}
+                    if isinstance(data, dict):
+                        if resp.status_code >= 400:
+                            data.setdefault("error_code", resp.status_code)
+                        return data
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "내장 브릿지 httpx(%s) 호출 예외 -> urllib 폴백: %s",
+                    method,
+                    exc,
+                )
+
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
@@ -1318,17 +1433,33 @@ class _AdaptiveTelegramBridge:
             logger.debug("텔레그램 API(%s) 호출 예외: %s", method, exc)
             return {"ok": False, "description": str(exc)}
 
-    async def _ack_telegram_offset(self, target_update_id: int) -> None:
+    async def _persist_offset_locally(self, target_update_id: int) -> None:
+        """
+        # NEW [Case 81]:
+        최신 update_id 를 로컬 오프셋 파일(.tg_update_offset_<folder_slug>.dat)과 3중 원장에 동시 영속화한다.
+        """
         uid = max(self._last_update_id, safe_int(target_update_id, 0))
         if uid <= 0:
             return
         self._last_update_id = uid
+        try:
+            await asyncio.to_thread(
+                write_persisted_tg_offset_sync, self.base_dir, uid
+            )
+        except Exception:
+            pass
         try:
             await self.context.ledger.update_state(
                 TARGET_SYMBOL, last_tg_update_id=uid
             )
         except Exception:
             pass
+
+    async def _ack_telegram_offset(self, target_update_id: int) -> None:
+        uid = max(self._last_update_id, safe_int(target_update_id, 0))
+        if uid <= 0:
+            return
+        await self._persist_offset_locally(uid)
         try:
             await self._call_tg(
                 "getUpdates",
@@ -1351,7 +1482,7 @@ class _AdaptiveTelegramBridge:
             if not isinstance(updates, list) or not updates:
                 return
 
-            max_stale_uid = 0
+            max_stale_uid = self._last_update_id
             for upd in updates:
                 if isinstance(upd, dict):
                     uid = safe_int(upd.get("update_id"), 0)
@@ -1458,7 +1589,7 @@ class _AdaptiveTelegramBridge:
     ) -> Tuple[float, Dict[str, Any]]:
         """
         # MODIFIED [Case 80 : /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행]:
-        현재가를 최신화한 뒤,もし candle_metrics_cache 에 아직 prev_bar_close 가 세팅되어 있지 않다면
+        현재가를 최신화한 뒤, 만약 candle_metrics_cache 에 아직 prev_bar_close 가 세팅되어 있지 않다면
         그 자리에서 get_candles_1m(total_count=200)을 1회 호출하여 Wilder's RSI(14) 기저값을 생성한다.
         """
         now_est = datetime.now(EST_TZ)
@@ -1752,6 +1883,14 @@ class _AdaptiveTelegramBridge:
         )
 
     async def _execute_manual_update_command(self, chat_id: str) -> None:
+        """
+        # MODIFIED [Case 62, Case 68, Case 75 & Case 81]:
+        1) /update 수신 즉시 오프셋을 로컬 파일(.tg_update_offset_<slug>.dat), 원장, 텔레그램 서버에 선행 확정한다.
+        2) execute_git_pull_and_preflight() 로 업데이트 및 서브프로세스 검증을 수행한다.
+        3) 신규 커밋(changed == True)이 적용되었을 때는 구버전 os._exit(0) 을 제거하고,
+           텔레그램 HTTP 세션을 즉시 닫은(_close_tg_http_client) 뒤 Case 81 3.5초 하드 워치독 및
+           perform_self_restart_execv(os.execv + os._exit(1) 폴백)로 무중단 인플레이스 자가 재기동한다!
+        """
         await self._ack_telegram_offset(self._last_update_id)
         await self.send_message(
             chat_id=chat_id,
@@ -1766,7 +1905,7 @@ class _AdaptiveTelegramBridge:
         changed = False
         if callable(fn_upd):
             upd_res = await _call_plugin_adaptive(
-                fn_upd, base_dir=self.context.base_dir
+                fn_upd, base_dir=self.base_dir
             )
             if isinstance(upd_res, tuple):
                 ok = bool(upd_res[0]) if len(upd_res) >= 1 else False
@@ -1786,7 +1925,7 @@ class _AdaptiveTelegramBridge:
                 ok = bool(upd_res)
                 msg = "✅ 10대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성 100% 통과 · 원장 보존"
         else:
-            ok, msg = verify_all_modules_compile(self.context.base_dir)
+            ok, msg = verify_all_modules_compile(self.base_dir)
 
         await self._ack_telegram_offset(self._last_update_id)
 
@@ -1811,11 +1950,18 @@ class _AdaptiveTelegramBridge:
             chat_id=chat_id,
             text=(
                 "🚀 <b>[신규 업데이트 검증 통과]</b>\n"
-                "🔸 원장 데이터 100% 보존 상태로 잠시 후 스나이퍼 데몬을 재기동합니다..."
+                "🔸 원장 데이터 100% 보존 상태로 스나이퍼 데몬을 무중단 자가 재기동합니다..."
             ),
         )
-        await asyncio.sleep(0.5)
-        os._exit(0)
+        await self._close_tg_http_client()
+        trigger_graceful_restart(
+            context=self.context,
+            shutdown_event=getattr(self.context, "shutdown_event", None),
+            reason="MANUAL_TELEGRAM_UPDATE",
+            watchdog_delay_sec=3.5,
+        )
+        await asyncio.sleep(0.3)
+        perform_self_restart_execv(reason="MANUAL_TELEGRAM_UPDATE")
 
     async def _cycle_golden_mode_and_render(
         self,
@@ -2053,9 +2199,15 @@ class _AdaptiveTelegramBridge:
             await self._reset_realized_profit_only(chat_id=chat_id)
 
     async def run_polling_loop(self) -> None:
+        """
+        🚨 [Case 81 (# MODIFIED) : 내장 텔레그램 브릿지 불사조 폴링 루프 (Immortal Supervisor Wrapper)]:
+        - 텔레그램 전용 httpx.AsyncClient 분리 운용 및 HTTP 409 Conflict / 연속 3회 오류 시 자동 재생성
+        - 개별 명령어 처리 예외 격리 및 최상위 감독 루프를 통해 shutdown_event.is_set() 전까지
+          어떠한 예외에서도 텔레그램 수신 태스크가 단독 사망하지 않도록 100% 보장한다.
+        """
         if not _extract_valid_tg_token(self.bot_token):
             self.bot_token, discovered_cid = _discover_telegram_credentials(
-                self.context.base_dir, getattr(self.context, "api", None)
+                self.base_dir, getattr(self.context, "api", None)
             )
             if not self.chat_id and discovered_cid:
                 self.chat_id = discovered_cid
@@ -2063,87 +2215,165 @@ class _AdaptiveTelegramBridge:
         if not _extract_valid_tg_token(self.bot_token):
             logger.error(
                 "🚨 유효한 텔레그램 봇 토큰(숫자:영숫자)을 찾을 수 없습니다! 현재 폴더(%s)의 .env 내 TELEGRAM_BOT_TOKEN 을 확인하세요.",
-                self.context.base_dir,
+                self.base_dir,
             )
             while not self.context.shutdown_event.is_set():
                 await asyncio.sleep(10.0)
             return
 
-        await self._call_tg(
-            "deleteWebhook", {"drop_pending_updates": False}, timeout_sec=8.0
-        )
-        await self._flush_stale_updates_on_startup()
-        logger.info(
-            "📡 [텔레그램 관제탑 폴링 루프 가동 완료] (폴더=%s · chat_id=%s)",
-            getattr(self.context, "folder_slug", "default"),
-            self.chat_id or "auto-detect",
-        )
+        try:
+            while not self.context.shutdown_event.is_set():
+                try:
+                    await self._ensure_tg_http_client()
+                    await self._call_tg(
+                        "deleteWebhook",
+                        {"drop_pending_updates": False},
+                        timeout_sec=8.0,
+                    )
+                    await self._flush_stale_updates_on_startup()
+                    logger.info(
+                        "📡 [Case 81 불사조 텔레그램 관제탑 폴링 루프 가동 완료] (폴더=%s · chat_id=%s · last_update_id=%d)",
+                        getattr(self.context, "folder_slug", "default"),
+                        self.chat_id or "auto-detect",
+                        self._last_update_id,
+                    )
 
-        while not self.context.shutdown_event.is_set():
-            try:
-                payload: Dict[str, Any] = {
-                    "offset": self._last_update_id + 1,
-                    "timeout": 15,
-                    "allowed_updates": ["message", "callback_query"],
-                }
-                res = await self._call_tg(
-                    "getUpdates", payload, timeout_sec=20.0
-                )
-                if isinstance(res, dict) and bool(res.get("ok")):
-                    updates = res.get("result")
-                    if isinstance(updates, list):
-                        for upd in updates:
-                            if not isinstance(upd, dict):
-                                continue
-                            uid = safe_int(upd.get("update_id"), 0)
-                            if uid > self._last_update_id:
-                                self._last_update_id = uid
-                                try:
-                                    await self.context.ledger.update_state(
-                                        TARGET_SYMBOL, last_tg_update_id=uid
-                                    )
-                                except Exception:
-                                    pass
+                    while not self.context.shutdown_event.is_set():
+                        try:
+                            payload: Dict[str, Any] = {
+                                "offset": self._last_update_id + 1,
+                                "timeout": 15,
+                                "allowed_updates": [
+                                    "message",
+                                    "callback_query",
+                                ],
+                            }
+                            res = await self._call_tg(
+                                "getUpdates", payload, timeout_sec=20.0
+                            )
+                            if isinstance(res, dict) and bool(res.get("ok")):
+                                self._consecutive_poll_errors = 0
+                                updates = res.get("result")
+                                if isinstance(updates, list):
+                                    for upd in updates:
+                                        if self.context.shutdown_event.is_set():
+                                            break
+                                        if not isinstance(upd, dict):
+                                            continue
+                                        uid = safe_int(upd.get("update_id"), 0)
+                                        if uid > self._last_update_id:
+                                            await self._persist_offset_locally(
+                                                uid
+                                            )
 
-                            if isinstance(upd.get("callback_query"), dict):
-                                await self._handle_callback_query(
-                                    upd["callback_query"]
+                                        try:
+                                            if isinstance(
+                                                upd.get("callback_query"), dict
+                                            ):
+                                                await self._handle_callback_query(
+                                                    upd["callback_query"]
+                                                )
+                                            elif isinstance(
+                                                upd.get("message"), dict
+                                            ):
+                                                m_obj = upd["message"]
+                                                c_obj = (
+                                                    m_obj.get("chat")
+                                                    if isinstance(
+                                                        m_obj.get("chat"), dict
+                                                    )
+                                                    else {}
+                                                )
+                                                cid = str(
+                                                    c_obj.get("id")
+                                                    or self.chat_id
+                                                    or ""
+                                                ).strip()
+                                                if (
+                                                    self.chat_id
+                                                    and cid
+                                                    and cid != self.chat_id
+                                                ):
+                                                    continue
+                                                txt = str(
+                                                    m_obj.get("text") or ""
+                                                ).strip()
+                                                msg_date = safe_float(
+                                                    m_obj.get("date"), 0.0
+                                                )
+                                                if (
+                                                    msg_date > 0.0
+                                                    and msg_date
+                                                    < (self._boot_epoch - 1.0)
+                                                    and (
+                                                        txt.lower().startswith(
+                                                            "/update"
+                                                        )
+                                                        or txt
+                                                        == "🚀 시스템 업데이트"
+                                                    )
+                                                ):
+                                                    await self._ack_telegram_offset(
+                                                        uid
+                                                    )
+                                                    continue
+                                                if txt:
+                                                    await self._handle_command_or_text(
+                                                        chat_id=cid,
+                                                        raw_text=txt,
+                                                    )
+                                        except asyncio.CancelledError:
+                                            raise
+                                        except Exception as disp_exc:
+                                            logger.warning(
+                                                "⚠️ [Case 81 내장 브릿지 개별 메시지 처리 예외 격리(폴링 유지)]: %s",
+                                                disp_exc,
+                                            )
+                            else:
+                                self._consecutive_poll_errors += 1
+                                err_code = (
+                                    safe_int(res.get("error_code"), 0)
+                                    if isinstance(res, dict)
+                                    else 0
                                 )
-                            elif isinstance(upd.get("message"), dict):
-                                m_obj = upd["message"]
-                                c_obj = (
-                                    m_obj.get("chat")
-                                    if isinstance(m_obj.get("chat"), dict)
-                                    else {}
-                                )
-                                cid = str(
-                                    c_obj.get("id") or self.chat_id or ""
-                                ).strip()
-                                if self.chat_id and cid and cid != self.chat_id:
-                                    continue
-                                txt = str(m_obj.get("text") or "").strip()
-                                msg_date = safe_float(m_obj.get("date"), 0.0)
                                 if (
-                                    msg_date > 0.0
-                                    and msg_date < (self._boot_epoch - 1.0)
-                                    and (
-                                        txt.lower().startswith("/update")
-                                        or txt == "🚀 시스템 업데이트"
-                                    )
+                                    err_code == 409
+                                    or self._consecutive_poll_errors >= 3
                                 ):
-                                    await self._ack_telegram_offset(uid)
-                                    continue
-                                if txt:
-                                    await self._handle_command_or_text(
-                                        chat_id=cid, raw_text=txt
+                                    await self._recreate_tg_http_client(
+                                        reason=f"POLL_FAIL_CODE_{err_code}_CNT_{self._consecutive_poll_errors}"
                                     )
-                else:
-                    await asyncio.sleep(1.5)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.debug("텔레그램 폴링 루프 일시 예외: %s", exc)
-                await asyncio.sleep(2.0)
+                                    self._consecutive_poll_errors = 0
+                                    await asyncio.sleep(3.0)
+                                else:
+                                    await asyncio.sleep(1.5)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            self._consecutive_poll_errors += 1
+                            if self._consecutive_poll_errors >= 3:
+                                await self._recreate_tg_http_client(
+                                    reason=f"POLL_EXC_{type(exc).__name__}"
+                                )
+                                self._consecutive_poll_errors = 0
+                            logger.debug(
+                                "텔레그램 폴링 내부 루프 일시 예외(자가 치유): %s",
+                                exc,
+                            )
+                            await asyncio.sleep(2.0)
+                except asyncio.CancelledError:
+                    break
+                except Exception as sup_exc:
+                    logger.warning(
+                        "🛡️ [Case 81 내장 브릿지 불사조 감독 루프 재기동] 3초 후 세션 재생성 복구: %s",
+                        sup_exc,
+                    )
+                    await self._recreate_tg_http_client(
+                        reason="SUPERVISOR_RECOVERY"
+                    )
+                    await asyncio.sleep(3.0)
+        finally:
+            await self._close_tg_http_client()
 
 
 async def _run_auto_update_loop_dynamic(

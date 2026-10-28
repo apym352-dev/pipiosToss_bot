@@ -4,7 +4,7 @@
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
 익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
 경량화 메인 오케스트레이터 코어 모듈 (메인 코드 2분할 리팩토링 Part 2 / 2 · Step 04 / 04)
-- 최종 확정 진화 챔피언 (🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 70 ~ Case 80) 100% 결속:
+- 최종 확정 진화 챔피언 (🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 70 ~ Case 81) 100% 결속:
   1) main_runtime.py 와 역할 분리를 통해 모바일 편집기 및 유지보수에 최적화된 경량 오케스트레이터 구현
   2) 8%(12.5분할) 황금비율 정액 기반 정량제 & 온디맨드 예비시드 수혈금(injected_reserve_usd)을 제외한 순수 코어 총자산(core_equity) 기반 정량 산출 &
      min(1회분 예산 상한 주수, 기준가 고정 정량) 이중 캡핑(Case 67, Case 77) & 자투리 절약금(부분 체결 시 비례 정산 Case 78) · 세후 실현수익금 실시간 시드 풀 복리 산입
@@ -19,8 +19,9 @@
   7) ⚡ [Case 65, Case 70, Case 71, Case 72, Case 79 & Case 80] 매수 직후 최초 60.0초 타임쉴드 유지 & 이후 보유 중 프리·정규·애프터·데이마켓
      24시간 전 세션(is_active_sell_window)에서 매 1.5초 실시간 4중 다중 익절 스나이퍼 매도 모니터 가동!
      (① 독립 골든포켓 +1.50% / ② 1층 +1.50% / ③ 2~6층 개별 및 통합 7층 +1.00% / ④ 2~7층 통합 이동평균 +1.00% · 장외 시세미제공/거래제한 100% 묵음!)
-  8) 🚨 [Case 66 미결 매수/매도 선행 정산], [Case 11 SIGTERM 0.1초 고속 안전 종료 가드] 및 타임쉴드/장외 무포지션 네트워크 트래픽 최적화
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온
+  8) 🚨 [Case 66 미결 매수/매도 선행 정산], [Case 11 SIGTERM 0.1초 고속 안전 종료 가드], [Case 75 httpx/httpcore 로그 묵음화] 및
+     [Case 81 장외 자동 업데이트 / 수동 업데이트 직후 2.0초 태스크 타임아웃 취소 · 텔레그램 소켓 즉시 반납 · os.execv 인플레이스 무중단 자가 교체 결속]
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 81 전수 락온
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ from main_runtime import (
     _run_auto_update_loop_dynamic,
 )
 from plugin_updater import (
+    arm_hard_restart_watchdog,
+    perform_self_restart_execv,
     purge_deprecated_legacy_files,
     verify_all_modules_compile,
 )
@@ -90,13 +93,17 @@ from toss_api import (
 )
 
 # ---------------------------------------------------------------------------
-# 로깅 포맷 설정 (EST/KST 병기 지원 및 저소음 고신뢰 로그)
+# 로깅 포맷 설정 (EST/KST 병기 지원 및 Case 75 저소음 고신뢰 로그)
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# NEW [Case 75]: 매 1.5초 시세 조회 시 systemd-journald 디스크 쓰기를 유발하는 httpx / httpcore INFO 로그 묵음화
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger("toss_sniper.main")
 
 # 메인 루프 주기 상수 (평시 1.5초 실시간 타점 감시 / 미체결 주문 체결 확인 부스터 0.4초 / 장외 0주 무포지션 대기 5.0초)
@@ -106,11 +113,11 @@ EXTENDED_ZERO_HOLD_INTERVAL_SEC: float = 5.00
 
 
 # ---------------------------------------------------------------------------
-# [핵심 1] 스나이퍼 애플리케이션 전역 컨텍스트 (SniperAppContext — Case 68 폴더별 3중 원장 결속)
+# [핵심 1] 스나이퍼 애플리케이션 전역 컨텍스트 (SniperAppContext — Case 68 폴더별 3중 원장 & Case 81 자가 재기동 결속)
 # ---------------------------------------------------------------------------
 class SniperAppContext:
     """
-    코어 모듈이 공유하는 단일 런타임 상태 컨텍스트 (Case 68 폴더 위치 기반 격리 적용).
+    코어 모듈이 공유하는 단일 런타임 상태 컨텍스트 (Case 68 폴더 위치 기반 격리 및 Case 81 무중단 자가 교체 플래그 적용).
     """
 
     def __init__(self, base_dir: Optional[str] = None) -> None:
@@ -132,6 +139,10 @@ class SniperAppContext:
         self.dual_strike_mutex: asyncio.Lock = asyncio.Lock()
         self.wakeup_event: asyncio.Event = asyncio.Event()
         self.shutdown_event: asyncio.Event = asyncio.Event()
+
+        # NEW [Case 81]: 장외 무인 자동 업데이트 및 /update 재기동 요청 플래그
+        self.restart_requested: bool = False
+        self.restart_reason: str = ""
 
         self.latest_prices: Dict[str, float] = {TARGET_SYMBOL: 0.0}
         self.latest_holdings: Dict[str, Dict[str, Any]] = {
@@ -611,7 +622,7 @@ async def daily_gc_and_rollover_loop(context: SniperAppContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 5] 시스템 부트스트랩 · 프리플라이트 TDD · Case 11 시그널 0.1초 고속 종료 가드
+# [핵심 5] 시스템 부트스트랩 · 프리플라이트 TDD · Case 11 시그널 0.1초 고속 종료 & Case 81 무중단 인플레이스 교체 가드
 # ---------------------------------------------------------------------------
 async def _run_init_step_with_cancel_guard(
     context: SniperAppContext,
@@ -669,7 +680,7 @@ async def async_main() -> None:
 
     run_quant_engine_tdd()
     logger.info(
-        "✅ [QuantEngine TDD 사전 무결성 검증 통과] 챔피언 🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 (기본값 OFF · Case 59~80) 검증 완료"
+        "✅ [QuantEngine TDD 사전 무결성 검증 통과] 챔피언 🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 (기본값 OFF · Case 59~81) 검증 완료"
     )
 
     context = SniperAppContext(base_dir=base_dir)
@@ -781,24 +792,62 @@ async def async_main() -> None:
     ]
 
     logger.info(
-        "🚀 [SOXL 7층 골디락스 멀티그리드 스나이퍼 가동 완료 · 폴더=%s] 매수 04:07~16:00 EST(황금시간 전액매수 제어반 선택) & 익절 매도 24시간(프리·정규·애프터·데이장) 확장(Case 65~80)",
+        "🚀 [SOXL 7층 골디락스 멀티그리드 스나이퍼 가동 완료 · 폴더=%s] 매수 04:07~16:00 EST(황금시간 전액매수 제어반 선택) & 익절 매도 24시간(프리·정규·애프터·데이장) 확장(Case 65~81)",
         context.folder_slug,
     )
 
     try:
         await context.shutdown_event.wait()
     finally:
+        # 🚨 Case 81: 재기동 요청 상태에서 혹시 워치독이 아직 가동되지 않았다면 즉시 3.5초 하드 워치독 장착
+        if getattr(context, "restart_requested", False):
+            arm_hard_restart_watchdog(
+                delay_sec=3.5,
+                reason=str(
+                    getattr(context, "restart_reason", "AUTO_UPDATE")
+                    or "AUTO_UPDATE"
+                ),
+            )
+
         for t in tasks:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 🚨 Case 81: 하위 태스크 취소 대기 시 2.0초 하드 타임아웃을 강제하여 무한 블로킹(Deaf Zombie) 원천 차단
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=2.0,
+            )
+        except Exception:
+            pass
+
+        # 🚨 Case 81: 텔레그램 전용 롱폴링 소켓 즉시 반납 (신구 프로세스 HTTP 409 충돌 방지)
+        close_tg_fn = getattr(context.tg, "_close_tg_http_client", None)
+        if callable(close_tg_fn):
+            try:
+                await asyncio.wait_for(close_tg_fn(), timeout=1.5)
+            except Exception:
+                pass
+
         close_fn = getattr(context.api, "close", None)
         if callable(close_fn):
             try:
                 c_res = close_fn()
                 if inspect.isawaitable(c_res):
-                    await c_res
+                    await asyncio.wait_for(c_res, timeout=1.5)
             except Exception:
                 pass
+
+        # 🚨 Case 81 핵심: 업데이트 재기동 요청 시 asyncio.run() 의 shutdown_default_executor() 스레드 풀 대기 데드락에
+        # 갇히기 전에 이 자리에서 즉시 os.execv 인플레이스 프로세스 자가 교체를 집행한다!
+        if getattr(context, "restart_requested", False):
+            perform_self_restart_execv(
+                reason=str(
+                    getattr(context, "restart_reason", "AUTO_UPDATE")
+                    or "AUTO_UPDATE"
+                )
+            )
+
         logger.info("✅ [SOXL 7층 골디락스 스나이퍼 안전 종료 완료]")
 
 
