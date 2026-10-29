@@ -6,10 +6,10 @@ SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 
 황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 01)
 - 제1헌법: 모든 파일 I/O 및 네트워크 통신의 asyncio.to_thread 비동기 격리 + GlobalThrottle 중앙 통제
 - 제2헌법: 기동 시 GET /api/v1/accounts 1회 호출로 BROKERAGE accountSeq 메모리 락온 및 X-Tossinvest-Account 자동 주입
-- 제3헌법 ~ 제6헌법 및 Case 01 ~ 80 전수 락온:
+- 제3헌법 ~ 제6헌법 및 Case 01 ~ 82 전수 락온:
   1) REAL_ALLOWED_SYMBOLS = ("SOXL",) 단일 롱 화이트리스트 물리적 강제 (인버스 숏 SOXS 원천 차단)
-  2) get_holdings_map_with_status, get_candles_1m, get_candles_1d, get_recent_trades, get_current_prices_batch,
-     get_orderbook, get_buying_power_usd, get_sellable_quantity, create_order, modify_order,
+  2) get_holdings_map_with_status, get_candles_1m, get_candles_1d, get_recent_trades, get_recent_wick_high_price,
+     get_current_prices_batch, get_orderbook, get_buying_power_usd, get_sellable_quantity, create_order, modify_order,
      cancel_order, get_order_detail, get_open_orders, get_closed_orders, probe_latest_manual_fill_price,
      get_usd_krw_rate 등 전 메서드 100% 정식 구현!
   3) 미국 주식 주문 정정(/modify) 시 quantity 필드 원천 배제(400 us-modify-quantity-not-supported 차단) 및
@@ -42,6 +42,8 @@ SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 
   11) 🚨 [Case 80 : 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 가용현금 100% 전액 추가매수 &
       독립 골든포켓(golden_pocket) 분리회계 & 전술 제어반(/settlement) 3대 모드 선택기(기본값 "NONE" [OFF]) &
       1분봉 캔들 페이지네이션 방탄화(1페이지 200봉 유실 차단 및 스키마 다변화 대응) 탑재]
+  12) 🚨 [Case 82 : 1분봉 윗꼬리(Upper-Wick) 슈팅 100% 포착을 위한 GET /api/v1/trades 최근 5.0초 내 유효 체결 최고가 추출기
+      (get_recent_wick_high_price & _parse_iso_timestamp_to_epoch) 탑재]
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("toss_sniper.toss_api")
 
 # ---------------------------------------------------------------------------
-# [핵심 상수] 제4헌법 EST 단일 타임존 & 최종 확정 진화 챔피언 (Case 72 ~ 80) 전역 상수
+# [핵심 상수] 제4헌법 EST 단일 타임존 & 최종 확정 진화 챔피언 (Case 72 ~ 82) 전역 상수
 # ---------------------------------------------------------------------------
 EST_TZ = ZoneInfo("America/New_York")
 KST_TZ = ZoneInfo("Asia/Seoul")
@@ -472,11 +474,11 @@ class GlobalThrottle:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] SOXL 단일 롱 7-Tier 순수 멀티 그리드 및 골든포켓 폴더별 3중 안전 지층 원장 (SoxlStratumLedger — Case 68 ~ 80)
+# [핵심 2] SOXL 단일 롱 7-Tier 순수 멀티 그리드 및 골든포켓 폴더별 3중 안전 지층 원장 (SoxlStratumLedger — Case 68 ~ 82)
 # ---------------------------------------------------------------------------
 class SoxlStratumLedger:
     """
-    🎯 1 ~ 🎯 5 & Case 02, 05, 06, 58 ~ 80:
+    🎯 1 ~ 🎯 5 & Case 02, 05, 06, 58 ~ 82:
     현재 봇이 위치한 폴더(`base_dir`)를 기준으로:
     ① 폴더 고유 원장(`soxl_stratum_ledger_<folder_slug>.json` — Git 덮어쓰기 100% 면역)
     ② 표준 호환 원장(`soxl_stratum_ledger.json` — 기존 코드 및 외부 도구 호환 미러)
@@ -1263,7 +1265,7 @@ class SoxlStratumLedger:
                         (sanitized.get("golden_pocket") or {}).get("qty"), 0
                     )
                     logger.info(
-                        "📂 [Case 68~80 폴더별 3중 7층 골디락스 그리드 원장 락온 완료] 폴더=[%s] · 채택소스=%s · 시드=$%.2f · 그리드=%d주(%d개층) · 골든포켓=%d주(모드=%s) · 예비수혈=%d/%d회분($%.2f) · 고유원장=%s",
+                        "📂 [Case 68~82 폴더별 3중 7층 골디락스 그리드 원장 락온 완료] 폴더=[%s] · 채택소스=%s · 시드=$%.2f · 그리드=%d주(%d개층) · 골든포켓=%d주(모드=%s) · 예비수혈=%d/%d회분($%.2f) · 고유원장=%s",
                         self.folder_slug,
                         best_label,
                         safe_float(sanitized.get("initial_seed_usd"), 10000.0),
@@ -2057,7 +2059,7 @@ class TossApiClient:
         return {}
 
     # -----------------------------------------------------------------------
-    # [Market Data 그룹] 현재가 · 호가 · 최근체결 · 1분봉/일봉 차트 (API.txt v1.2.14)
+    # [Market Data 그룹] 현재가 · 호가 · 최근체결 · 윗꼬리 체결최고가 · 1분봉/일봉 차트 (API.txt v1.2.14)
     # -----------------------------------------------------------------------
     async def get_current_prices_batch(
         self, symbols: Iterable[str] = (TARGET_SYMBOL,)
@@ -2099,9 +2101,10 @@ class TossApiClient:
         self, symbol: str = TARGET_SYMBOL, count: int = 50
     ) -> List[Dict[str, Any]]:
         """
-        # NEW [API.txt v1.2.14 & Case 80]:
+        # NEW [API.txt v1.2.14 & Case 80, Case 82]:
         GET /api/v1/trades?symbol=SOXL&count=50
-        당일 최근 체결 내역(price, volume, timestamp)을 조회하여 캔들 차트 지연 시 보조 시계열로 활용한다.
+        당일 최근 체결 내역(price, volume, timestamp)을 조회하여 캔들 차트 지연 시 보조 시계열 및
+        1분봉 윗꼬리(Upper-Wick) 순간 체결 최고가 포착에 활용한다.
         """
         q_cnt = max(1, min(50, safe_int(count, 50)))
         try:
@@ -2121,6 +2124,99 @@ class TossApiClient:
         except Exception as exc:
             logger.debug("get_recent_trades 예외(묵음): %s", exc)
         return []
+
+    @staticmethod
+    def _parse_iso_timestamp_to_epoch(ts_val: Any) -> float:
+        """
+        # NEW [Case 82 : GET /api/v1/trades ISO 8601 체결 시각 -> UTC Epoch(float) 변환기]:
+        예: "2026-03-25T22:30:42.100+09:00" 또는 "2026-10-29T06:57:02.120Z" 또는 숫자형 epoch 를
+        초 단위 float 타임스탬프로 안전하게 변환한다.
+        """
+        if ts_val is None or isinstance(ts_val, bool):
+            return 0.0
+        if isinstance(ts_val, (int, float)):
+            f_ts = safe_float(ts_val, 0.0)
+            if f_ts > 1e12:
+                return f_ts / 1000.0
+            return max(0.0, f_ts)
+        s = str(ts_val).strip()
+        if not s:
+            return 0.0
+        try:
+            if s.endswith("Z") or s.endswith("z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=EST_TZ)
+            return float(dt.timestamp())
+        except Exception:
+            num_ts = safe_float(s, 0.0)
+            if num_ts > 1e12:
+                return num_ts / 1000.0
+            return max(0.0, num_ts)
+
+    async def get_recent_wick_high_price(
+        self,
+        symbol: str = TARGET_SYMBOL,
+        lookback_sec: float = 5.0,
+        min_after_ts: float = 0.0,
+        count: int = 15,
+    ) -> Tuple[float, float]:
+        """
+        # NEW [Case 82 : 1분봉 윗꼬리(Upper-Wick) 슈팅 포착용 최근 체결 최고가 추출기]:
+        GET /api/v1/prices 는 단일 스냅샷(lastPrice)만 반환하므로 1.5 ~ 2.5초 폴링 간격 사이에
+        0.3초 동안만 찍히고 내려온 $104.00 윗꼬리 체결틱을 놓칠 수 있다.
+        이를 원천 보완하기 위해 GET /api/v1/trades?symbol=SOXL&count=15 를 호출하여:
+        1) 체결 시각(trade_epoch)이 현재 시각 기준 최근 lookback_sec(기본 5.0초, 서버 시차 -2.0초 허용) 이내이고,
+        2) 직전 매수/매도 체결 시각 및 기소모된 윗꼬리 시각(min_after_ts) 이후에 발생한 유효 체결틱 중
+           가장 높은 체결가(best_price)와 해당 체결 시각(best_ts)을 (best_price, best_ts) 튜플로 반환한다.
+        """
+        trades = await self.get_recent_trades(
+            symbol=symbol, count=max(1, min(50, safe_int(count, 15)))
+        )
+        if not trades:
+            return 0.0, 0.0
+
+        now_epoch = time.time()
+        max_age = max(1.0, safe_float(lookback_sec, 5.0))
+        after_cut = max(0.0, safe_float(min_after_ts, 0.0))
+
+        best_price: float = 0.0
+        best_ts: float = 0.0
+
+        for t in trades:
+            if not isinstance(t, dict):
+                continue
+            p = safe_float(t.get("price"), 0.0)
+            if p <= 0.0:
+                continue
+            vol = safe_float(t.get("volume"), 1.0)
+            if vol <= 0.0:
+                continue
+
+            t_epoch = self._parse_iso_timestamp_to_epoch(
+                t.get("timestamp")
+                or t.get("dt")
+                or t.get("dateTime")
+                or t.get("time")
+            )
+            if t_epoch <= 0.0:
+                continue
+
+            if after_cut > 0.0 and t_epoch <= (after_cut + 1e-6):
+                continue
+
+            age_sec = now_epoch - t_epoch
+            if age_sec > max_age or age_sec < -2.0:
+                continue
+
+            if p > best_price or (
+                abs(p - best_price) < 1e-9 and t_epoch > best_ts
+            ):
+                best_price = p
+                best_ts = t_epoch
+
+        return round(best_price, 4), round(best_ts, 4)
 
     async def get_orderbook(
         self, symbol: str = TARGET_SYMBOL
@@ -2942,3 +3038,7 @@ class TossApiClient:
 
     async def close(self) -> None:
         return None
+
+
+# 하위 호환 별칭
+TossInvestApiClient = TossApiClient
