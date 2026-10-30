@@ -2,16 +2,17 @@
 """
 # MODIFIED: plugin_updater.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(🐂 SOXL 단독) 매수 04:07 ~ 16:00 EST 제한 &
-익절 매도 24시간 전 세션 확장 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
-10대 코어 모듈(main_runtime.py + main.py 2분할 포함) 무디스크 인메모리 프리플라이트 컴파일 · AST 심볼 교차 검증 ·
-4배수 선제 스냅 치유기 · 텔레그램 잔류 큐 소각 · 폴더별 원장/환경변수/오프셋 스냅샷 Dirty-Check 철벽 보존 ·
-무인 Git 업데이트 및 Case 81 커널 레벨 인플레이스 프로세스 자가 교체(os.execv + 3.5초 하드 워치독) 코어 모듈 (Step 01 / 04)
+익절 매도 24시간 전 세션 확장(Case 83 방안 C 오버나이트 통합이평 사수 하이브리드) 오버나이트 7층 골디락스 멀티 그리드 지층관리 스나이퍼
+11대 코어 모듈(quant_engine_core.py + quant_engine.py 2분할 및 main_runtime.py + main.py 2분할 포함)
+무디스크 인메모리 프리플라이트 컴파일 · AST 심볼 교차 검증 · 4배수 선제 스냅 치유기 · 텔레그램 잔류 큐 소각 ·
+폴더별 원장/환경변수/오프셋 스냅샷 Dirty-Check 철벽 보존 · 무인 Git 업데이트 및
+Case 81 커널 레벨 인플레이스 프로세스 자가 교체(os.execv + 3.5초 하드 워치독) 코어 모듈 (Step 05 / 05)
 - 제1헌법: 모든 파일 I/O 및 git/python 서브프로세스 실행을 asyncio.to_thread 로 비동기 격리 및 타임아웃 적용
 - 제3헌법: 구버전 폐기 파일(daymarket_sim_plugin.py, whipsaw_plugin.py, state_SOXS.json 등) 디스크 영구 소각
 - Case 07: 평일 04:00 ~ 16:05 EST 장중 백그라운드 무인 업데이트 재기동 전면 차단 및 systemd ExecStartPre 장중 락다운 지원
 - Case 11 & Case 62:
-  1) 10대 필수 코어 모듈(REQUIRED_CORE_MODULES : main_runtime.py + main.py 분할 반영) 인메모리 compile() 문법 검증 +
-     AST ImportFrom 심볼 테이블 정적 교차 검증
+  1) 11대 필수 코어 모듈(REQUIRED_CORE_MODULES : quant_engine_core.py + quant_engine.py 및 main_runtime.py + main.py 분할 반영)
+     인메모리 compile() 문법 검증 + AST ImportFrom 심볼 테이블 정적 교차 검증
   2) 모바일 복사·붙여넣기 과정에서 발생한 마크다운 펜스 및 홀수 공백(1칸 -> 0칸, 9칸 -> 8칸)을
      AST 파싱 전에 4배수로 선제 스냅 교정하여 다음 줄이 오염되는 현상을 100% 원천 차단(_auto_heal_indentation_glitches)
   3) /update 실행 시 구버전 RAM 캐시(sys.modules) 간섭을 막기 위해 `python3 plugin_updater.py --verify-only` 를
@@ -75,11 +76,12 @@ from toss_api import (
 logger = logging.getLogger("toss_sniper.plugin_updater")
 
 # ---------------------------------------------------------------------------
-# [핵심 상수] 10대 필수 코어 모듈(main_runtime.py + main.py 분할 반영) 및 영구 폐기 레거시 파일 목록 (제3헌법)
+# [핵심 상수] 11대 필수 코어 모듈(quant_engine_core.py + quant_engine.py 및 main_runtime.py + main.py 분할 반영) 및 영구 폐기 레거시 파일 목록 (제3헌법)
 # ---------------------------------------------------------------------------
 REQUIRED_CORE_MODULES: Tuple[str, ...] = (
     "toss_api.py",
     "quant_indicators_plugin.py",
+    "quant_engine_core.py",
     "quant_engine.py",
     "sniper_plugin.py",
     "sniper_exit_plugin.py",
@@ -101,17 +103,17 @@ DEPRECATED_LEGACY_FILES: Tuple[str, ...] = (
 
 _TG_TOKEN_STRICT_RE = re.compile(r"\b(\d{8,12}:[A-Za-z0-9_-]{25,60})\b")
 
-# NEW [Case 81]: 중복 execv 방지를 위한 프로세스 전역 락 및 워치독 상태
+# [Case 81]: 중복 execv 방지를 위한 프로세스 전역 락 및 워치독 상태
 _RESTART_EXEC_LOCK = threading.Lock()
 _RESTART_WATCHDOG_TIMER: Optional[threading.Timer] = None
 
 
 # ---------------------------------------------------------------------------
-# [핵심 0-A · NEW Case 81] 커널 레벨 인플레이스 프로세스 자가 교체(os.execv) 및 3.5초 데몬 하드 워치독
+# [핵심 0-A · Case 81] 커널 레벨 인플레이스 프로세스 자가 교체(os.execv) 및 3.5초 데몬 하드 워치독
 # ---------------------------------------------------------------------------
 def resolve_tg_offset_dat_path(base_dir: Optional[str] = None) -> str:
     """
-    # NEW [Case 81]:
+    # [Case 81]:
     폴더별 텔레그램 update_id 오프셋 전용 영속화 파일 경로(<base_dir>/.tg_update_offset_<folder_slug>.dat)를 반환한다.
     """
     target_dir = get_bot_base_dir(base_dir)
@@ -121,7 +123,7 @@ def resolve_tg_offset_dat_path(base_dir: Optional[str] = None) -> str:
 
 def read_persisted_tg_offset_sync(base_dir: Optional[str] = None) -> int:
     """
-    # NEW [Case 81]:
+    # [Case 81]:
     폴더별 .tg_update_offset_<folder_slug>.dat 파일과 3중 원장(last_tg_update_id) 중 가장 큰 update_id 를 읽어 반환한다.
     """
     target_dir = get_bot_base_dir(base_dir)
@@ -161,7 +163,7 @@ def write_persisted_tg_offset_sync(
     base_dir: Optional[str], update_id: int
 ) -> None:
     """
-    # NEW [Case 81 & Case 75]:
+    # [Case 81 & Case 75]:
     폴더별 .tg_update_offset_<folder_slug>.dat 파일에 최신 update_id 를 Dirty-Check 후 원자적으로 기록한다.
     """
     uid = safe_int(update_id, 0)
@@ -198,7 +200,7 @@ def write_persisted_tg_offset_sync(
 
 def perform_self_restart_execv(reason: str = "AUTO_UPDATE") -> None:
     """
-    🚨 [Case 81 핵심 (# NEW) : 커널 레벨 인플레이스 프로세스 자가 교체기]:
+    🚨 [Case 81 핵심 : 커널 레벨 인플레이스 프로세스 자가 교체기]:
     장외 무인 자동 업데이트(run_auto_update_loop) 또는 수동 /update 완료 후 프로세스를 재기동할 때:
     1) 구버전 os._exit(0) 은 종료 코드 0(정상 종료)을 반환하여 systemd(Restart=on-failure)가 재시작을 거부하고
        봇이 영구 정지(Dead)되는 원인이었으므로 이를 100% 영구 폐기한다.
@@ -266,7 +268,7 @@ def arm_hard_restart_watchdog(
     reason: str = "AUTO_UPDATE",
 ) -> threading.Timer:
     """
-    🚨 [Case 81 핵심 (# NEW) : 비동기 종료 데드락(Deaf Zombie Process) 타파용 3.5초 데몬 하드 워치독]:
+    🚨 [Case 81 핵심 : 비동기 종료 데드락(Deaf Zombie Process) 타파용 3.5초 데몬 하드 워치독]:
     업데이트 직후 shutdown_event.set() 이 호출되었을 때 텔레그램 폴링 루프만 먼저 종료되고
     백그라운드 asyncio.to_thread 워커 스레드가 남아 asyncio.run() 의 shutdown_default_executor() 에서
     프로세스가 죽지 않고 멈추는 '귀머거리 좀비(Deaf Zombie)' 현상을 원천 봉쇄한다.
@@ -303,7 +305,7 @@ def trigger_graceful_restart(
     watchdog_delay_sec: float = 3.5,
 ) -> None:
     """
-    🚨 [Case 81 (# NEW) : 재기동 플래그 설정 + 3.5초 하드 워치독 가동 + 이벤트 루프 즉시 깨우기 통합 점화기]:
+    🚨 [Case 81 : 재기동 플래그 설정 + 3.5초 하드 워치독 가동 + 이벤트 루프 즉시 깨우기 통합 점화기]:
     context.restart_requested = True 설정과 동시에 3.5초 데몬 하드 워치독을 장착하고
     shutdown_event 및 wakeup_event 를 깨워 즉시 재기동 시퀀스로 진입시킨다.
     """
@@ -440,7 +442,7 @@ def _flush_telegram_pending_updates_sync(
     base_dir: Optional[str] = None,
 ) -> int:
     """
-    # MODIFIED [Case 81]:
+    # [Case 81]:
     데몬 기동 전(ExecStartPre / --verify-only) 또는 /update 실행 직후에
     텔레그램 서버 큐에 남아 있는 모든 미확인 메시지(/start, /update, callback_query 등)의
     최대 update_id 를 조회하여 즉시 `offset = max_update_id + 1` 로 소비 확정(Ack)하고
@@ -507,7 +509,7 @@ def _flush_telegram_pending_updates_sync(
 # ---------------------------------------------------------------------------
 def _snapshot_protected_local_files_sync(target_dir: str) -> Dict[str, bytes]:
     """
-    🚨 Case 68, Case 75, Case 80 & Case 81 (# MODIFIED):
+    🚨 Case 68, Case 75, Case 80 & Case 81:
     git reset --hard 가 실행되기 직전에 현재 폴더(target_dir) 내의:
     1) 고아 임시 파일(*.tmp.*) 및 __pycache__ 선제 청소로 여유 공간 확보
     2) 3중 안전 원장(SoxlStratumLedger) 선행 동기화 실행 (Dirty-Check 로 변경된 경우에만 기록)
@@ -802,7 +804,7 @@ def _auto_heal_indentation_glitches(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 3] AST 최상위 익스포트 심볼 추출기 및 10대 코어 모듈 무디스크 인메모리 교차 검증기 (Case 75)
+# [핵심 3] AST 최상위 익스포트 심볼 추출기 및 11대 코어 모듈 무디스크 인메모리 교차 검증기 (Case 75)
 # ---------------------------------------------------------------------------
 def _extract_module_exported_symbols(tree: ast.AST) -> Set[str]:
     """
@@ -843,12 +845,13 @@ def verify_all_modules_compile(
     """
     🚨 Case 11, Case 62 & Case 75 [디스크 쓰기 0 Byte 순수 인메모리 컴파일 검증]:
     1) 검증 시작 전 emergency_free_disk_space_sync(remove_pycache=False) 로 고아 .tmp.* 파일을 청소한다.
-    2) 10대 필수 코어 모듈(REQUIRED_CORE_MODULES : main_runtime.py + main.py 포함)이 디스크에 모두 존재하는지 확인한다.
+    2) 11대 필수 코어 모듈(REQUIRED_CORE_MODULES : quant_engine_core.py + quant_engine.py 및 main_runtime.py + main.py 포함)이
+       디스크에 모두 존재하는지 확인한다.
     3) 홀수 공백 들여쓰기 오타 자동 치유(_auto_heal_indentation_glitches) 후
        디스크에 단 1바이트도 쓰지 않는 파이썬 내장 인메모리 바이트코드 컴파일러
        `compile(src, fpath, "exec", dont_inherit=True)` 및 `ast.parse(src, filename=fpath)` 로
        문법 및 바이트코드 생성 무결성을 100% 검증한다!
-    4) 10대 코어 모듈 간 `from <local_module> import <symbol>` 구문을 전수 대조하여,
+    4) 11대 코어 모듈 간 `from <local_module> import <symbol>` 구문을 전수 대조하여,
        대상 모듈에 존재하지 않는 심볼을 임포트하는 경우 즉시 에러 원인을 반환한다.
     """
     target_dir = get_bot_base_dir(base_dir)
@@ -895,7 +898,7 @@ def verify_all_modules_compile(
     if errors:
         return False, "🚨 컴파일/문법 검증 실패:\n" + "\n".join(errors)
 
-    # 2단계: 10대 로컬 모듈 간 from <mod> import <symbol> 심볼 존재 여부 교차 검증
+    # 2단계: 11대 로컬 모듈 간 from <mod> import <symbol> 심볼 존재 여부 교차 검증
     local_mod_names = {f[:-3] for f in REQUIRED_CORE_MODULES}
     for mod_name, tree in ast_trees.items():
         fname = f"{mod_name}.py"
@@ -1160,7 +1163,7 @@ async def run_auto_update_loop(
     interval_sec: float = 3600.0,
 ) -> None:
     """
-    # MODIFIED [Case 07, Case 68, Case 75 & Case 81]:
+    # [Case 07, Case 68, Case 75 & Case 81]:
     백그라운드 무인 자동 업데이트 워커 (main_runtime.py / main.py 에서 정식 임포트):
     - 평일 04:00 ~ 16:05 EST 장중에는 절대 재기동하지 않고 대기한다 (Case 07).
     - 장외 시간대에 원격 저장소에 새로운 커밋이 감지되고 프리플라이트 검증을 통과했을 때만
@@ -1248,7 +1251,7 @@ def _cli_main() -> int:
     parser.add_argument(
         "--verify-only",
         action="store_true",
-        help="디스크의 10대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성만 검증하고 종료합니다.",
+        help="디스크의 11대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성만 검증하고 종료합니다.",
     )
     parser.add_argument(
         "--base-dir",
