@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 # MODIFIED: quant_engine.py
-인피니트 스노우볼 (Infinite Snowball) v3.0 — 퀀트 엔진 코어 Part 2 / 2 (Step 02 / 05)
+인피니트 스노우볼 (Infinite Snowball) v3.0 — 퀀트 엔진 코어 Part 2 / 2 (Step 03 / 07)
 역할:
 1) quant_engine_core.py (Part 1 / 2) 의 모든 상수·구조체·정량/수혈/스텝업 판정 심볼 명시적 재익스포트(Facade Re-export)로
    타 모듈 AST 임포트 호환성 100% 보장
@@ -13,7 +13,8 @@
 4) 상단 2층 ~ 7층 통합 이동평균(compute_upper_2_to_7_moving_avg) 산출 및
    🚨 [Case 83 방안 C] 오버나이트(애프터·데이마켓, is_overnight_session=True) 중 상단 2~7층 보유 시
    개별 층(1층 및 2~6층 개별) 쪼개 팔기를 잠가 통합 이동평균(wma_2_to_7) 도망을 원천 봉쇄하고,
-   장외에서는 통합 이동평균(+1.00%) 전량 졸업(또는 1층 단독 보유 +1.50% / 독립 골든포켓 +1.50%)만 허용한 뒤
+   장외에서는 통합 이동평균(+1.00%) 일괄 졸업(1층 본전 이상 시 SELL_ALL_GRAD 전량 졸업 / 1층 본전 미달 시 SELL_WMA_UPPER 상단 일괄 졸업,
+   또는 1층 단독 보유 +1.50% / 독립 골든포켓 +1.50%)만 허용한 뒤
    04:07 EST 프리장 개장(is_overnight_session=False) 즉시 4중 다중 익절을 전면 개방하는 하이브리드 매도 판정기(evaluate_multi_grid_sell_targets)
 5) 포트폴리오 통합 요약기(summarize_stratum_portfolio) 및 기동 전 TDD 사전 무결성 검증 슈트(run_quant_engine_tdd · Case 25 ~ 83 전수 검증)
 - 제1헌법 ~ 제6헌법 및 Case 01 ~ 83 완벽 준수
@@ -494,7 +495,7 @@ def evaluate_multi_grid_sell_targets(
     is_overnight_session: bool = False,
 ) -> Dict[str, Any]:
     """
-    🚨 MODIFIED [Case 70, Case 71, Case 72, Case 80 & Case 83 (방안 C 오버나이트 통합이평 사수 하이브리드)]:
+    🚨 MODIFIED [Case 69, Case 70, Case 71, Case 72, Case 80 & Case 83 (방안 C 오버나이트 통합이평 사수 하이브리드)]:
     매수 후 60초 타임쉴드 뒤 매 1.5초 실시간 현재가(live_price)로 매도 조건을 스캔한다:
     1) [조건 ① : 독립 골든포켓(golden_pocket) +1.50% 이상 도래 (Case 80)]
        gp.is_active == True 이고 live_price >= gp.target_sell_price(rise_pocket_pct) 이면
@@ -504,8 +505,8 @@ def evaluate_multi_grid_sell_targets(
          하단 1층(+1.50%)이나 개별 완충층(2~6층 +1.00%)을 장외에서 먼저 쪼개 팔면 저가 물량 가중치가 사라져
          2~7층 통합 이동평균(wma_2_to_7)이 위로 도망가고 04:07 EST 프리장 시초가 갭상승 수익을 잃게 된다.
          따라서 오버나이트 중 상단 지층 보유 시에는 개별 층 매도(hit_l1 단독 및 hit_indiv_grid)를 전면 잠그고,
-         오직 '상단 2층 ~ 7층 통합 이동평균(wma_2_to_7) +1.00% 도달(활성 1층 보유 시 1층 본전 이상 동시 충족)' 시의
-         전 지층 일괄 졸업(SELL_ALL_GRAD / SELL_WMA_UPPER)만 허용한다!
+         오직 '상단 2층 ~ 7층 통합 이동평균(wma_2_to_7) +1.00% 도달' 시의 상단 일괄 졸업(SELL_WMA_UPPER,
+         활성 1층 보유 중 1층 본전 이상 동시 충족 시 1층까지 포함한 전량 졸업 SELL_ALL_GRAD)만 허용한다!
        - 단, 상단 지층 없이 활성 1층 단독 1개 층만 보유 중(has_upper_tiers == False)일 때는
          통합이평 도망 역설이 없으므로 오버나이트 중에도 +1.50% 도달 시 즉시 익절(SELL_L1_ONLY)한다.
     3) [프리마켓 + 정규장 (04:07 ~ 16:00 EST, is_overnight_session == False) 구간에서의 4중 다중 익절 전면 개방]
@@ -582,17 +583,28 @@ def evaluate_multi_grid_sell_targets(
             valid, rise_upper_pct=rise_upper_pct
         )
         wma_target_p = safe_float(wma_info.get("upper_wma_target_price"), 0.0)
+        # MODIFIED [Case 69, Case 71 & Case 83]:
+        # 1) 소수점 절사로 인한 원금 손실을 막기 위해 1층 본전 하한가(b1_breakeven_p)를 math.ceil 로 정밀 산출한다.
+        # 2) 오버나이트 중에도 lp >= wma_target_p 이면 상단 2~7층 일괄 졸업(SELL_WMA_UPPER)을 항상 허용하고,
+        #    동시에 1층 본전 이상(lp >= b1_breakeven_p)이면 1층까지 포함하여 전량 졸업(SELL_ALL_GRAD)시킨다!
         b1_breakeven_p = (
-            round(valid[0].book_price, 2) if (active_l1 and valid) else 0.0
-        )
-        l1_breakeven_ok = bool(
-            not active_l1 or not valid or lp >= b1_breakeven_p
+            round(
+                math.ceil(
+                    (
+                        max(0.01, valid[0].actual_avg_price, valid[0].book_price)
+                        - 1e-9
+                    )
+                    * 100.0
+                )
+                / 100.0,
+                2,
+            )
+            if (active_l1 and valid)
+            else 0.0
         )
 
-        # ③ 상단 2~7층 통합 이동평균(+1.00%) 도달 시 전 지층 일괄 졸업 (프리·정규·오버나이트 전 세션 허용!)
-        if wma_target_p > 0.0 and lp >= wma_target_p and (
-            not is_overnight_session or l1_breakeven_ok
-        ):
+        # ③ 상단 2~7층 통합 이동평균(+1.00%) 도달 시 상단(및 본전 이상 1층) 일괄 졸업 (프리·정규·오버나이트 전 세션 허용!)
+        if wma_target_p > 0.0 and lp >= wma_target_p:
             for k in range(upper_start_idx, len(valid)):
                 sold_idx_set.add(k)
             floor_candidates.append(wma_target_p)
@@ -1322,7 +1334,7 @@ def run_quant_engine_tdd() -> bool:
     4단 와이드 활주로(-1.0% / -2.0% / -3.5% / -5.5%),
     1층 ~ 6층 개별 완충층 보존 및 8회차 최상단(6층+7층 ➔ 통합 7층 GRID_L7) 병합(Case 72),
     골든포켓(+1.50%) / 1층(+1.50%) / 2~7층 개별(+1.00%) / 2~7층 통합 이동평균(+1.00%) 4중 다중 익절 판정(Case 71, 72, 80),
-    🚨 Case 83 (방안 C) 오버나이트(is_overnight_session=True) 중 상단 2~7층 보유 시 개별층 매도 잠금 및 통합이평 전량 졸업만 허용,
+    🚨 Case 83 (방안 C) 오버나이트(is_overnight_session=True) 중 상단 2~7층 보유 시 개별층 매도 잠금 및 통합이평 일괄 졸업 허용,
     상단 그리드 단독 보유(1층 공석) 시 2층 단가 상한 역전 차단(HOLD_PREVENT_INVERSION · Case 73) 및
     눌림/돌파 독립 1층 재장전(Case 59, 73), 정적 기억저가 잠금 및 🔓 06_STEP2X_15PCT_C20 3중 안전문 스텝업 해금(Case 60, 72, 76),
     💉 05_RESV_6P_GUARD30 30% 자투리 승격 방지 가드 · 토스 계좌 여유자금 감지 자동 수혈 · 0주 졸업 자동 상환(Case 77),
@@ -1450,6 +1462,23 @@ def run_quant_engine_tdd() -> bool:
         and res_ov_l1_single["sell_qty"] == 10
         and res_ov_l1_single["reason_tag"] == "SELL_L1_ONLY"
     ), f"TDD 실패(Case 83 1층 단독 오버나이트 익절 미작동): {res_ov_l1_single}"
+
+    # NEW 4-E) [Case 83 방안 C] GOLDEN_L1 등으로 1층 단가($88.00) > 상단 2~3층 통합이평 목표가($83.83)일 때 오버나이트 중 상단 일괄 졸업(SELL_WMA_UPPER) 정상 작동 검증
+    res_ov_wma_upper = evaluate_multi_grid_sell_targets(
+        [
+            StratumBucket(20, 88.0, 1760.0, 1760.0, 1, "GOLDEN_L1"),
+            StratumBucket(10, 81.0, 810.0, 810.0, 1, "GRID_L2"),
+            StratumBucket(10, 85.0, 850.0, 850.0, 1, "GRID_L3"),
+        ],
+        live_price=84.00,
+        is_overnight_session=True,
+    )
+    assert (
+        res_ov_wma_upper["should_sell"] is True
+        and res_ov_wma_upper["sold_indices"] == [1, 2]
+        and res_ov_wma_upper["sell_qty"] == 20
+        and res_ov_wma_upper["reason_tag"] == "SELL_WMA_UPPER"
+    ), f"TDD 실패(Case 83 1층 고단가 시 상단 일괄졸업 SELL_WMA_UPPER 미작동): {res_ov_wma_upper}"
 
     # Case 80: 독립 골든포켓 단독 익절(+1.50%) 및 오버나이트 중 골든포켓 단독 익절 검증
     mock_gp = GoldenAllInPocket(

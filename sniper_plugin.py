@@ -4,14 +4,15 @@
 순수 롱(SOXL) 전용 '04:07 ~ 16:00 EST 매도(및 0주 싸이클 종료) 후 60초 강제 타임쉴드(POST_SELL_TO_BUY_SHIELD_SEC = 60.0) &
 직전 매수 후 60초 타임쉴드 · 60초 경과 후 실시간 현재가 직접 조회 및 순수 현재가 지정가(LIMIT) 매수 발주 ·
 매도 1호가(Ask 1) 참조 및 10초 후 상향 추격 정정 100% 영구 소각(Case 65) ·
-최종 확정 진화 챔피언(🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 71 ~ Case 80) :
+최종 확정 진화 챔피언(🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20 · 기본값 NONE[OFF] · Case 71 ~ Case 83) :
 미동부 프리장 황금시간대(07:00 ~ 07:50 EST & 14봉 이상 확보된 1분봉 Wilder RSI(14) <= 19.0) 도달 시 제어반 선택 모드(POCKET_ALLIN / GRID_L1_ALLIN)에 따른
 가용 현금 시드(free_cash_usd) 100% 전액 추가매수 발주 및 독립 골든포켓(golden_pocket) 분리 정산(Case 80) ·
 독립 골든포켓 가동 중 그리드 0주/보유 상태에서 불필요한 1.5초 시세 조회 차단(HOLD_ZERO_GRID_CASH_IN_GOLDEN_POCKET / 60s 쉴드 · Case 80) ·
 0주 상태 60초 타임쉴드 경과 후 현재가 지정가 실물 1층(REENTRY_1FL) 산입 & 원장 0주·실잔고 시차 발생 시 buckets[0] IndexError 원천 방어 ·
 활성 1층 부분 체결(buckets[0].qty < l1_target_quota_qty) 시 체결 수량 비례 자투리 정산 & 신규 1층 주문 정량(ord_q) 고유 보존 &
 매수 후 60초 타임쉴드 경과 뒤 매 1.5초 실시간 모니터에서 현재가 <= 1층 단가(buckets[0].book_price) 재도래 시
-미체결 잔량(TOPUP_1FL) 지정가 60초 재대기 발주 및 기존 1층 무승격 원자적 합산(Case 78) ·
+토스 실계좌 예수금 0.25초 재시도 및 60초 쉴드 방어(422 무한 발주 루프 원천 차단)를 거쳐
+미체결 잔량(TOPUP_1FL) 지정가 60초 재대기 발주 및 기존 1층 무승격 원자적 합산(Case 77, Case 78) ·
 상단 2층 ~ 7층(GRID_L2 ~ GRID_L7) 보유 중 1층 공석 시 10분 게이트를 기다리지 않고 매 60.0초(1분) 타임쉴드 주기마다
 실시간 현재가를 조회하되 현재가 <= 2층 단가(buckets[0].book_price) 상한 가드(HOLD_PREVENT_INVERSION · Case 73) 하에서
 직전 익절가 대비 눌림목(-1.00%) OR 상승돌파(+1.00%) 하이브리드 독립 실물 1층(REENTRY_1FL) 즉시 재장전 ·
@@ -22,8 +23,8 @@
 30% 자투리 1주 승격 방지 가드(GUARD30) & 예수금 API 일시 오류(0.0 반환) 시 재시도 및 허위 시드고갈 알림 차단 &
 시드고갈 시 단 1회 입금 요청 알림 영구 래치(waiting_reserve_deposit_alert_sent) &
 토스 실계좌 여유자금(1회분 이상) 입금 자동 감지 기반 최대 +6회분 온디맨드 예비시드 자동 수혈(Case 77) ·
-체결 시 1~7층 순수 멀티 그리드 승격·자투리 시드 귀속·기정산 주문 ID(last_settled_order_ids) 각인·양방향 인덱싱 보호(Case 69, Case 71 ~ 80)' 코어 플러그인 (Step 02 / 04)
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 80 완벽 준수
+체결 시 1~7층 순수 멀티 그리드 승격·자투리 시드 귀속·기정산 주문 ID(last_settled_order_ids) 각인·양방향 인덱싱 보호(Case 69, Case 71 ~ 83)' 코어 플러그인 (Step 05 / 07)
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 83 완벽 준수
 """
 
 from __future__ import annotations
@@ -1226,7 +1227,7 @@ async def sync_pending_buy_order_plugin(
     is_vacant_l1_now = bool(len(buckets_now) > 0 and not has_active_l1_now)
     cur_target_q = max(0, safe_int(st.get("l1_target_quota_qty"), 0))
     fallback_target_q_on_zero_cancel = (
-        cur_target_q
+        max(buckets_now[0].qty, cur_target_q)
         if (lot_type in ("TOPUP_1FL", "GOLDEN_POCKET") and has_active_l1_now)
         else (buckets_now[0].qty if has_active_l1_now else 0)
     )
@@ -1399,7 +1400,7 @@ async def execute_seed_protected_buy_gate_plugin(
     now_est: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    🎯 1, 🎯 2, 🎯 4 & Case 25 ~ 80 (챔피언 : 🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20):
+    🎯 1, 🎯 2, 🎯 4 & Case 25 ~ 83 (챔피언 : 🌟 POCKET_ALLIN / 🔥 GRID_L1_ALLIN × 💉 05_RESV_6P_GUARD30 × 🔓 06_STEP2X_15PCT_C20):
     04:07:00 ~ 16:00:00 EST 운용 구간에서 작동하는 비대칭 매수 타격 엔진.
     """
     dt_now = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
@@ -1672,13 +1673,20 @@ async def execute_seed_protected_buy_gate_plugin(
                                 oid = str(
                                     ord_res.get("orderId") or ""
                                 ).strip()
-                                next_target_q_g = (
-                                    safe_int(
-                                        st_now.get("l1_target_quota_qty"), 0
-                                    )
-                                    if g_lot_type == "GOLDEN_POCKET"
-                                    else buy_qty_g
+                                # MODIFIED [Case 78 & Case 80]:
+                                # 이미 활성 1층이 존재하는 상태에서 GOLDEN_L1 이 발주될 때는 기존 1층의 l1_target_quota_qty 를 유지하고
+                                # 실제 체결 커밋 시점에 체결 수량으로 확정하여, 0주 미체결 취소 시 기존 1층 정량이 오염되지 않게 보호!
+                                has_l1_g = has_active_l1_bucket(now_buckets)
+                                prev_target_q_g = safe_int(
+                                    st_now.get("l1_target_quota_qty"), 0
                                 )
+                                if (
+                                    g_lot_type == "GOLDEN_POCKET"
+                                    or has_l1_g
+                                ):
+                                    next_target_q_g = prev_target_q_g
+                                else:
+                                    next_target_q_g = buy_qty_g
                                 await context.ledger.update_state(
                                     TARGET_SYMBOL,
                                     l1_target_quota_qty=next_target_q_g,
@@ -2176,7 +2184,7 @@ async def execute_seed_protected_buy_gate_plugin(
         }
 
     # -----------------------------------------------------------------------
-    # [분기 B-0 · Case 78 : 활성 1층 부분 체결 미체결 잔량(rem_quota_qty > 0) 존재 시]
+    # [분기 B-0 · Case 77, Case 78 & Case 80 : 활성 1층 부분 체결 미체결 잔량(rem_quota_qty > 0) 존재 시]
     # -----------------------------------------------------------------------
     l1_target_q = max(
         buckets[0].qty, safe_int(st.get("l1_target_quota_qty"), 0)
@@ -2232,16 +2240,56 @@ async def execute_seed_protected_buy_gate_plugin(
                         now_free_cash = max(
                             0.0, safe_float(st_now.get("free_cash_usd"), 0.0)
                         )
+                        one_share_top_cost = exec_order_p * (
+                            1.0 + ROUND_TRIP_FEE_RATE_PCT / 100.0
+                        )
+                        now_gp_top = pocket_from_dict(
+                            st_now.get("golden_pocket")
+                        )
+                        if (
+                            now_gp_top.is_active
+                            and now_free_cash < one_share_top_cost
+                        ):
+                            mark_reserve_deposit_check_shield(
+                                context=context,
+                                symbol=TARGET_SYMBOL,
+                                clear_shield=False,
+                            )
+                            return {
+                                "status": "HOLD_TOPUP_CASH_IN_GOLDEN_POCKET",
+                                "golden_pocket_qty": now_gp_top.qty,
+                            }
+
+                        # MODIFIED [Case 77 & Case 78 : 예수금 API 0.0 반환 시 0.25초 재시도 및 None 우회 422 루프 원천 차단]:
                         raw_bp_top = await context.api.get_buying_power_usd(
                             safety_buffer_pct=0.2
                         )
+                        if (
+                            raw_bp_top <= 0.0
+                            and now_free_cash >= one_share_top_cost
+                        ):
+                            await asyncio.sleep(0.25)
+                            raw_bp_top = await context.api.get_buying_power_usd(
+                                safety_buffer_pct=0.2
+                            )
+
+                        if raw_bp_top < one_share_top_cost:
+                            mark_reserve_deposit_check_shield(
+                                context=context,
+                                symbol=TARGET_SYMBOL,
+                                clear_shield=False,
+                            )
+                            return {
+                                "status": "HOLD_TOPUP_INSUFFICIENT_BROKER_BP",
+                                "broker_bp_usd": raw_bp_top,
+                                "free_cash_usd": now_free_cash,
+                            }
+
                         buy_qty_top, _ = resolve_affordable_buy_qty(
                             target_qty=now_rem_qty,
                             price_t=exec_order_p,
                             free_cash_usd=now_free_cash,
-                            broker_buying_power_usd=(
-                                raw_bp_top if raw_bp_top > 0.0 else None
-                            ),
+                            broker_buying_power_usd=raw_bp_top,
                             max_portion_budget_usd=topup_budget,
                         )
                         if buy_qty_top > 0:
@@ -2294,8 +2342,13 @@ async def execute_seed_protected_buy_gate_plugin(
                                     "l1_target_quota_qty": now_target_q,
                                 }
                             except Exception as exc:
+                                mark_reserve_deposit_check_shield(
+                                    context=context,
+                                    symbol=TARGET_SYMBOL,
+                                    clear_shield=False,
+                                )
                                 logger.warning(
-                                    "Case 78 1층 미체결 잔량(TOPUP_1FL) 지정가 주문 예외: %s",
+                                    "Case 78 1층 미체결 잔량(TOPUP_1FL) 지정가 주문 예외(60초 쿨다운): %s",
                                     exc,
                                 )
                                 return {

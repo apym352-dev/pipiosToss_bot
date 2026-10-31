@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 # MODIFIED: main_runtime.py
-인피니트 스노우볼 (Infinite Snowball) v3.0 — 메인 런타임 서포트 브릿지 (메인 코드 2분할 리팩토링 Part 1 / 2 · Step 03 / 04)
+인피니트 스노우볼 (Infinite Snowball) v3.0 — 메인 런타임 서포트 브릿지 (메인 코드 2분할 리팩토링 Part 1 / 2 · Step 06 / 07)
 - 역할:
   1) 적응형 비동기 플러그인 호출기(_call_plugin_adaptive) 및 동적 심볼 리졸버(_resolve_module_attr) (Case 13)
   2) TossApiClient 런타임 메서드 호환성 폴리필 어댑터(_install_toss_api_compatibility_patches · 보조 폴리필 5종 및 close 전수 포함)
-  3) 폴더별 3중 원장 인스턴스 팩토리(_instantiate_stratum_ledger · Case 68) 및 주말 휴장 판별(_check_weekend_nyse_closed_dynamic · Case 01, 79)
+  3) 폴더별 3중 원장 인스턴스 팩토리(_instantiate_stratum_ledger · Case 68) 및 주말 휴장 판별(_check_weekend_nyse_closed_dynamic · Case 01, 79, 83)
   4) 100% 벡터화 1분봉/일봉 지표 및 실시간 틱 Wilder's RSI(14) 무손실 직결(_compute_candle_metrics_dynamic · Case 80 RSI 50.0 고정 버그 영구 소각)
   5) 폴더 위치(base_dir) 전용 텔레그램 토큰·채팅방 ID 자동 탐색기(_discover_telegram_credentials · Case 68)
   6) 내장형 사용자 중심 초슬림 텔레그램 불사조 롱폴링/관제탑 브릿지(_AdaptiveTelegramBridge · tg_ui_plugin 단일 렌더러 직결 ·
-     /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행 ·
+     11대 코어 모듈 프리플라이트 안내 동기화 · /avwap 조회 시 1분봉 미확보 상태면 즉시 온디맨드 프리워밍 수행 ·
      전술 제어반 황금시간[07:00~07:50 EST & RSI <= 19.0] 전액매수 모드 선택기[기본값 NONE(OFF) ↔ POCKET_ALLIN ↔ GRID_L1_ALLIN] 완벽 지원 ·
      Case 75 httpx/httpcore INFO 로그 묵음화 & Case 81 전용 httpx.AsyncClient 자동 재생성 불사조 폴링 · 오프셋 파일 선행 영속화 · os.execv 인플레이스 자가 교체 탑재)
-- 제1헌법 ~ 제6헌법 및 Case 01 ~ 81 전수 락온
+- 제1헌법 ~ 제6헌법 및 Case 01 ~ 83 전수 락온
 """
 
 from __future__ import annotations
@@ -223,7 +223,7 @@ def _normalize_single_holding_item(
     )
     pl_obj = (
         item.get("profitLoss")
-        if isinstance(item.get("profitLoss"), dict)
+        if isinstance(it_pl := item.get("profitLoss"), dict)
         else {}
     )
 
@@ -1260,11 +1260,11 @@ def _discover_telegram_credentials(
 
 
 # ---------------------------------------------------------------------------
-# [핵심 5] 내장형 텔레그램 브릿지 (_AdaptiveTelegramBridge — tg_ui_plugin 렌더러 직결 & Case 80/81 완벽 통합)
+# [핵심 5] 내장형 텔레그램 브릿지 (_AdaptiveTelegramBridge — tg_ui_plugin 렌더러 직결 & Case 80/81/83 완벽 통합)
 # ---------------------------------------------------------------------------
 class _AdaptiveTelegramBridge:
     """
-    # MODIFIED [Case 62 ~ 81]:
+    # MODIFIED [Case 62 ~ 83]:
     tg_ui_plugin 의 4대 관제 보드 렌더러(build_start_schedule_message, build_avwap_radar_message,
     build_sync_instruction_message, build_settlement_control_message)를 단일 소스로 재사용하여
     코드 중복을 제거하고,
@@ -1886,7 +1886,7 @@ class _AdaptiveTelegramBridge:
         """
         # MODIFIED [Case 62, Case 68, Case 75 & Case 81]:
         1) /update 수신 즉시 오프셋을 로컬 파일(.tg_update_offset_<slug>.dat), 원장, 텔레그램 서버에 선행 확정한다.
-        2) execute_git_pull_and_preflight() 로 업데이트 및 서브프로세스 검증을 수행한다.
+        2) execute_git_pull_and_preflight() 로 업데이트 및 11대 코어 모듈 서브프로세스 검증을 수행한다.
         3) 신규 커밋(changed == True)이 적용되었을 때는 구버전 os._exit(0) 을 제거하고,
            텔레그램 HTTP 세션을 즉시 닫은(_close_tg_http_client) 뒤 Case 81 3.5초 하드 워치독 및
            perform_self_restart_execv(os.execv + os._exit(1) 폴백)로 무중단 인플레이스 자가 재기동한다!
@@ -1896,7 +1896,7 @@ class _AdaptiveTelegramBridge:
             chat_id=chat_id,
             text=(
                 "⏳ <b>[시스템 업데이트 개시]</b>\n"
-                "🔸 GitHub 최신 코드 동기화 및 10대 코어 모듈 프리플라이트 검증 중..."
+                "🔸 GitHub 최신 코드 동기화 및 11대 코어 모듈 프리플라이트 검증 중..."
             ),
         )
         fn_upd = getattr(
@@ -1919,11 +1919,11 @@ class _AdaptiveTelegramBridge:
                 msg = (
                     " · ".join(str_parts)
                     if str_parts
-                    else "✅ 10대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성 100% 통과 · 원장 보존"
+                    else "✅ 11대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성 100% 통과 · 원장 보존"
                 )
             else:
                 ok = bool(upd_res)
-                msg = "✅ 10대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성 100% 통과 · 원장 보존"
+                msg = "✅ 11대 코어 모듈 인메모리 컴파일 및 AST 심볼 정합성 100% 통과 · 원장 보존"
         else:
             ok, msg = verify_all_modules_compile(self.base_dir)
 

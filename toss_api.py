@@ -3,10 +3,10 @@
 # MODIFIED: toss_api.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 토스증권 Open API (v1.2.14) 방탄 통신 통제소 &
 SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 완충층 + 통합 7층 본대) 및
-황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 01)
+황금시간대(07:00 ~ 07:50 EST & RSI <= 19.0) 독립 골든포켓(GoldenAllInPocket · 기본값 NONE[OFF]) 폴더별 3중 지층 원장(SoxlStratumLedger) 코어 모듈 (Step 01 / 07)
 - 제1헌법: 모든 파일 I/O 및 네트워크 통신의 asyncio.to_thread 비동기 격리 + GlobalThrottle 중앙 통제
 - 제2헌법: 기동 시 GET /api/v1/accounts 1회 호출로 BROKERAGE accountSeq 메모리 락온 및 X-Tossinvest-Account 자동 주입
-- 제3헌법 ~ 제6헌법 및 Case 01 ~ 82 전수 락온:
+- 제3헌법 ~ 제6헌법 및 Case 01 ~ 83 전수 락온:
   1) REAL_ALLOWED_SYMBOLS = ("SOXL",) 단일 롱 화이트리스트 물리적 강제 (인버스 숏 SOXS 원천 차단)
   2) get_holdings_map_with_status, get_candles_1m, get_candles_1d, get_recent_trades, get_recent_wick_high_price,
      get_current_prices_batch, get_orderbook, get_buying_power_usd, get_sellable_quantity, create_order, modify_order,
@@ -20,8 +20,9 @@ SOXL 단일 롱 7-Tier 순수 멀티 그리드(1층 공격수 + 2 ~ 6층 개별 
        ③ 실시간 백업 금고(ledger_backups/soxl_stratum_ledger_<폴더명>.bak.json) 3중 원자적 동기화 및 기존 데이터 무손실 자동 이관
   5) 🚨 [Case 65, Case 69, Case 70 & Case 73 양방향·주기 60초 타임쉴드 시각 영속화 및 순수 원가 무결성 강제]
      - last_buy_fill_ts, last_sell_fill_ts, last_cycle_end_ts, last_sell_gate_eval_ts, last_reentry_eval_ts 원장 영속화
-  6) 🚨 [Case 63, Case 71 ~ Case 74 : 최종 확정 챔피언 🔓 06_STEP2X_15PCT_C20 7-Layer 순수 원가 보존 및
-     토스 CLOSED 주문 원장 역추적(probe_latest_manual_fill_price) & 기정산 주문 링버퍼(last_settled_order_ids) 탑재]
+  6) 🚨 [Case 19, Case 63, Case 71 ~ Case 74 : 최종 확정 챔피언 🔓 06_STEP2X_15PCT_C20 7-Layer 순수 원가 보존 및
+     토스 CLOSED 주문 원장 역추적(probe_latest_manual_fill_price : CANCEL_REJECTED / REPLACE_REJECTED / REPLACED 중복 배제) &
+     기정산 주문 링버퍼(last_settled_order_ids) 탑재]
   7) 🚨 [Case 75 : 클라우드 VM 디스크 고갈([Errno 28] No space left on device) 원천 차단 & 디스크 Write 90% 감축]
      - 원장 Dirty-Check(_is_state_materially_equal)를 통해 실질 상태 변경이 없을 때 불필요한 .tmp 생성 및 os.fsync() 원천 스킵
      - emergency_free_disk_space_sync() 로 고아 임시 파일(*.tmp.*, *.heal.tmp) · __pycache__ · 초과 백업 스냅샷 자동 소각 및
@@ -70,7 +71,7 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("toss_sniper.toss_api")
 
 # ---------------------------------------------------------------------------
-# [핵심 상수] 제4헌법 EST 단일 타임존 & 최종 확정 진화 챔피언 (Case 72 ~ 82) 전역 상수
+# [핵심 상수] 제4헌법 EST 단일 타임존 & 최종 확정 진화 챔피언 (Case 72 ~ 83) 전역 상수
 # ---------------------------------------------------------------------------
 EST_TZ = ZoneInfo("America/New_York")
 KST_TZ = ZoneInfo("Asia/Seoul")
@@ -257,7 +258,6 @@ def resolve_folder_isolated_ledger_paths(
     )
     legacy_path = os.path.join(target_dir, "soxl_stratum_ledger.json")
     backup_dir = os.path.join(target_dir, "ledger_backups")
-    # MODIFIED: f-string 중괄호 닫힘 문법 무결성 복구 완료
     backup_path = os.path.join(
         backup_dir, f"soxl_stratum_ledger_{folder_slug}.bak.json"
     )
@@ -430,7 +430,6 @@ class GlobalThrottle:
     _file_locks_guard = threading.Lock()
     _file_locks: Dict[str, _HybridFileLock] = {}
 
-    # MODIFIED: API.txt v1.2.14 Rate Limits Group 전수 커버 (ACCOUNT 등 명시)
     GROUP_INTERVALS: Dict[str, float] = {
         "AUTH": 0.50,
         "ACCOUNT": 0.25,
@@ -474,11 +473,11 @@ class GlobalThrottle:
 
 
 # ---------------------------------------------------------------------------
-# [핵심 2] SOXL 단일 롱 7-Tier 순수 멀티 그리드 및 골든포켓 폴더별 3중 안전 지층 원장 (SoxlStratumLedger — Case 68 ~ 82)
+# [핵심 2] SOXL 단일 롱 7-Tier 순수 멀티 그리드 및 골든포켓 폴더별 3중 안전 지층 원장 (SoxlStratumLedger — Case 68 ~ 83)
 # ---------------------------------------------------------------------------
 class SoxlStratumLedger:
     """
-    🎯 1 ~ 🎯 5 & Case 02, 05, 06, 58 ~ 82:
+    🎯 1 ~ 🎯 5 & Case 02, 05, 06, 58 ~ 83:
     현재 봇이 위치한 폴더(`base_dir`)를 기준으로:
     ① 폴더 고유 원장(`soxl_stratum_ledger_<folder_slug>.json` — Git 덮어쓰기 100% 면역)
     ② 표준 호환 원장(`soxl_stratum_ledger.json` — 기존 코드 및 외부 도구 호환 미러)
@@ -1265,7 +1264,7 @@ class SoxlStratumLedger:
                         (sanitized.get("golden_pocket") or {}).get("qty"), 0
                     )
                     logger.info(
-                        "📂 [Case 68~82 폴더별 3중 7층 골디락스 그리드 원장 락온 완료] 폴더=[%s] · 채택소스=%s · 시드=$%.2f · 그리드=%d주(%d개층) · 골든포켓=%d주(모드=%s) · 예비수혈=%d/%d회분($%.2f) · 고유원장=%s",
+                        "📂 [Case 68~83 폴더별 3중 7층 골디락스 그리드 원장 락온 완료] 폴더=[%s] · 채택소스=%s · 시드=$%.2f · 그리드=%d주(%d개층) · 골든포켓=%d주(모드=%s) · 예비수혈=%d/%d회분($%.2f) · 고유원장=%s",
                         self.folder_slug,
                         best_label,
                         safe_float(sanitized.get("initial_seed_usd"), 10000.0),
@@ -2769,22 +2768,25 @@ class TossApiClient:
         enforce_daymarket_block: bool = False,
     ) -> Dict[str, Any]:
         """
-        🎯 5 & 제5헌법 & Case 09, 18, 79:
+        🎯 5 & 제5헌법 & Case 01, 09, 18, 79:
         POST /api/v1/orders (오직 SOXL LIMIT 지정가 주문만 허용)
+        - enforce_daymarket_block=True 이고 BUY 주문일 때는 주말(토·일요일) 및
+          평일 04:07 ~ 16:00 EST 외 모든 매수 주문을 물리적으로 원천 차단한다.
         """
         sym = self._assert_real_order_symbol(symbol)
         clean_side = str(side or "BUY").upper().strip()
         if clean_side not in ("BUY", "SELL"):
             raise ValueError(f"유효하지 않은 주문 방향: {clean_side}")
 
+        # MODIFIED [Case 01 & Case 79]: 평일 04:07 ~ 16:00 EST 외(주말 토·일요일 포함) 모든 매수 주문 물리적 차단
         if enforce_daymarket_block and clean_side == "BUY":
             now_est = datetime.now(EST_TZ)
             hm = now_est.hour * 100 + now_est.minute
-            if not (407 <= hm <= 1600):
+            if now_est.weekday() >= 5 or not (407 <= hm <= 1600):
                 raise _NonRetryableApiError(
                     422,
                     "outside-active-window",
-                    f"04:07 ~ 16:00 EST 외 매수 차단 (현재 {hm:04d} EST)",
+                    f"평일 04:07 ~ 16:00 EST 외 매수 차단 (현재 요일={now_est.weekday()}, {hm:04d} EST)",
                 )
 
         qty_int = max(1, safe_int(quantity, 1))
@@ -2954,10 +2956,14 @@ class TossApiClient:
         symbol: str = TARGET_SYMBOL,
     ) -> Tuple[float, List[str]]:
         """
-        # [Case 19 & Case 63 수동 매수·매도 실체결가 역추적기]:
-        GET /api/v1/orders?status=CLOSED&symbol=SOXL 응답에서 봇이 이미 정산한 settled_order_ids 를 제외하고,
-        요청된 방향(side="BUY" 또는 "SELL")의 최신 체결 완료 건(execution.filledQuantity > 0 & averageFilledPrice > 0)들을
-        target_qty 수량만큼 역추적하여 수량 가중평균 체결단가와 매칭된 orderId 리스트를 반환한다.
+        # MODIFIED [Case 19 & Case 63 수동 매수·매도 실체결가 역추적기 (API.txt OrderStatus 규격 엄수)]:
+        GET /api/v1/orders?status=CLOSED&symbol=SOXL 응답에서:
+        1) 봇이 이미 정산한 settled_order_ids 를 제외하고,
+        2) CANCEL_REJECTED (취소 거부 별도 레코드), REPLACE_REJECTED (정정 거부 별도 레코드),
+           REJECTED (주문 거부), REPLACED (정정 대체된 원주문) 등 중복/미체결 오인 위험 상태를 원천 배제하며,
+        3) 요청된 방향(side="BUY" 또는 "SELL")의 실제 체결 완료 건(FILLED 및 부분 체결 후 종료된 PARTIAL_FILLED / CANCELED 중
+           execution.filledQuantity > 0 & averageFilledPrice > 0)들을 target_qty 수량만큼 역추적하여
+           수량 가중평균 체결단가와 매칭된 orderId 리스트를 반환한다.
         """
         target_side = str(side or "SELL").upper().strip()
         need_q = max(1, safe_int(target_qty, 1))
@@ -2982,6 +2988,15 @@ class TossApiClient:
                 continue
             o_side = str(ord_item.get("side") or "").upper().strip()
             if o_side != target_side:
+                continue
+
+            # Case 19 & API.txt OrderStatus: 정정/취소 거부로 생성된 별도 레코드 및 정정 대체된 원주문(REPLACED) 배제
+            ord_status = str(ord_item.get("status") or "").upper().strip()
+            if ord_status and ord_status not in (
+                "FILLED",
+                "PARTIAL_FILLED",
+                "CANCELED",
+            ):
                 continue
 
             # Case 19: 오직 실제 체결 데이터(execution.filledQuantity & averageFilledPrice)만 인정!

@@ -2,10 +2,10 @@
 """
 # MODIFIED: quant_indicators_plugin.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 순수 롱(SOXL) 매수 04:07 ~ 16:00 EST 제한 &
-익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓) 확장 오버나이트 지층관리 스나이퍼
+익절 매도 24시간 전 세션(프리마켓 + 정규장 + 애프터마켓 + 데이마켓 · 방안 C 오버나이트 통합이평 사수) 확장 오버나이트 지층관리 스나이퍼
 시계열 100% 벡터화 지표 엔진 · 실시간 틱 인메모리 1분봉 자체 합성기(_LIVE_1M_BAR_STORE) ·
-10분 고정 매수 게이트 버킷 산출 및 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 실시간 판정 코어 모듈 (Step 02 / 04)
-- 제4헌법 & Case 01, Case 79 & Case 80:
+10분 고정 매수 게이트 버킷 산출 및 황금시간대(07:00 ~ 07:50 EST & RSI(14) <= 19.0) 실시간 판정 코어 모듈 (Step 02 / 07)
+- 제4헌법 & Case 01, Case 79, Case 80 & Case 83:
   1) 모든 시계열 및 세션 경계 연산은 미국 동부 시간(EST_TZ = ZoneInfo('America/New_York')) 단일 소스 락온
   2) 매수 허용 시간창(is_active_buy_window : 평일 04:07 ~ 16:00 EST)과
      익절 매도 허용 시간창(is_active_sell_window : 04:00 ~ 04:06 EST 오프닝 안정화 및 주말 휴장 외
@@ -13,7 +13,8 @@
   3) 금요일 애프터마켓(16:00 ~ 19:59 EST) 익절 매도를 허용하기 위해 주말 휴장 구간을
      금요일 20:00 EST ~ 일요일 17:59 EST 로 제어 (일요일 18:00 EST 이후 월요일 데이마켓 정상 개방)
   4) 🌟 [Case 80] 미동부 프리장 황금시간대(is_golden_allin_time_window : 평일 07:00 ~ 07:50 EST) 판별기 및
-     API 1분봉 + 실시간 1.5초 틱 인메모리 1분봉 하이브리드 병합 · Wilder's RSI(14) O(1) 상수 시간 무부하 합성 탑재!
+     API 1분봉 + 실시간 1.5초 틱 인메모리 1분봉 하이브리드 무손실 병합(_sync_api_candles_into_memory_store 경합 방어) ·
+     Wilder's RSI(14) O(1) 상수 시간 무부하 합성 탑재!
      (RSI(14) 50.0 고정 데드락 영구 소각 및 최소 14개 분봉 확보 시에만 rsi_ready = True 활성화)
 - Case 36 & Case 64: 04:07 ~ 16:00 EST 구간 10분 고정 매수 게이트(LOCKED_BUY_INTERVAL_MIN = 10) 버킷 산출 및
   동일 버킷 내 중복 평가 원천 차단(evaluate_buy_gate_bucket_status)
@@ -117,9 +118,11 @@ def _sync_api_candles_into_memory_store(
     df_valid: pd.DataFrame,
 ) -> None:
     """
-    # NEW [Case 80]:
+    # MODIFIED [Case 80 : API 1분봉 ↔ 인메모리 실시간 틱 덮어쓰기 경합(Race Condition) 원천 차단]:
     API에서 정상적으로 수신·정제된 1분봉 DataFrame(df_valid)을 인메모리 1분봉 저장소(_LIVE_1M_BAR_STORE)와
-    동기화하여, 이후 일시적인 차트 API 타임아웃이 발생하더라도 과거 300분봉 히스토리가 인메모리에 그대로 유지되게 한다.
+    동기화하되, 차트 연산 도중 1.5초 메인 스나이퍼 루프가 기록한 최신 분봉(_min_key)의
+    고가(max)·저가(min)·최신 종가(closePrice) 및 연산 도중 새로 열린 분봉이 절대 덮어써져 유실되지 않도록
+    _LIVE_1M_BAR_LOCK 내부에서 원자적으로 병합 보존한다.
     """
     if df_valid is None or df_valid.empty:
         return
@@ -152,6 +155,39 @@ def _sync_api_candles_into_memory_store(
             )
         if synced_bars:
             with _LIVE_1M_BAR_LOCK:
+                existing_bars = _LIVE_1M_BAR_STORE.get(sym, [])
+                if existing_bars:
+                    last_sync_key = str(synced_bars[-1].get("_min_key") or "")
+                    for eb in existing_bars[-3:]:
+                        eb_key = str(eb.get("_min_key") or "")
+                        if not eb_key:
+                            continue
+                        if eb_key == last_sync_key:
+                            eb_h = safe_float(eb.get("highPrice"), 0.0)
+                            eb_l = safe_float(eb.get("lowPrice"), 0.0)
+                            eb_c = safe_float(eb.get("closePrice"), 0.0)
+                            cur_s = synced_bars[-1]
+                            if eb_h > 0.0:
+                                cur_s["highPrice"] = round(
+                                    max(
+                                        safe_float(cur_s.get("highPrice"), eb_h),
+                                        eb_h,
+                                    ),
+                                    4,
+                                )
+                            if eb_l > 0.0:
+                                cur_s_l = safe_float(cur_s.get("lowPrice"), eb_l)
+                                cur_s["lowPrice"] = round(
+                                    min(cur_s_l, eb_l)
+                                    if cur_s_l > 0.0
+                                    else eb_l,
+                                    4,
+                                )
+                            if eb_c > 0.0:
+                                cur_s["closePrice"] = round(eb_c, 4)
+                        elif eb_key > last_sync_key:
+                            synced_bars.append(dict(eb))
+                            last_sync_key = eb_key
                 _LIVE_1M_BAR_STORE[sym] = synced_bars[-_MAX_MEMORY_1M_BARS:]
     except Exception:
         pass
@@ -299,7 +335,7 @@ def is_extended_sell_only_window(
 
 def get_market_session_label(now_est: Optional[datetime] = None) -> str:
     """
-    # MODIFIED [Case 79 & Case 80]:
+    # MODIFIED [Case 79, Case 80 & Case 83]:
     현재 EST 시각에 따른 세션 상태 라벨(황금시간대 · 애프터장 · 데이장 익절감시 및 매수잠금 상태 명시)을 반환한다.
     """
     dt = now_est.astimezone(EST_TZ) if now_est else datetime.now(EST_TZ)
