@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-# NEW: /home/pipiosToss/mergy.py
+# FIXED: /home/pipiosToss/mergy.py
 인피니트 스노우볼 (Infinite Snowball) v3.0 — 11대 코어 파이썬 모듈 단일 파일 병합기
 - 어디에서 실행하더라도 /home/pipiosToss 내의 11대 코어 *.py 파일을 아키텍처 순서대로 병합하여
   /home/pipios4006/code.txt 파일로 원자적(Atomic) 저장합니다.
@@ -12,14 +12,13 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Set, Tuple
 
 SOURCE_DIR: str = "/home/pipiosToss"
 OUTPUT_DIR: str = "/home/pipios4006"
 OUTPUT_FILE: str = os.path.join(OUTPUT_DIR, "code.txt")
 SELF_FILENAME: str = "mergy.py"
 
-# 11대 필수 코어 모듈 표준 병합 순서
 CORE_MODULE_ORDER: Tuple[str, ...] = (
     "toss_api.py",
     "quant_indicators_plugin.py",
@@ -34,7 +33,7 @@ CORE_MODULE_ORDER: Tuple[str, ...] = (
     "main.py",
 )
 
- Excluded_FILES = {
+EXCLUDED_FILES: Set[str] = {
     SELF_FILENAME,
     "daymarket_sim_plugin.py",
     "whipsaw_plugin.py",
@@ -44,10 +43,6 @@ CORE_MODULE_ORDER: Tuple[str, ...] = (
 
 
 def collect_target_py_files(src_dir: str) -> List[str]:
-    """
-    1) CORE_MODULE_ORDER 에 정의된 11대 코어 모듈을 순서대로 먼저 수집하고,
-    2) 폴더 내에 추가 .py 파일이 있다면(mergy.py 및 폐기/임시 파일 제외) 뒤에 알파벳순으로 추가한다.
-    """
     if not os.path.isdir(src_dir):
         raise FileNotFoundError(f"소스 디렉토리가 존재하지 않습니다: {src_dir}")
 
@@ -65,7 +60,7 @@ def collect_target_py_files(src_dir: str) -> List[str]:
         for f in existing_files
         if f.endswith(".py")
         and f not in ordered_targets
-        and f not in Excluded_FILES
+        and f not in EXCLUDED_FILES
         and ".tmp" not in f
         and os.path.isfile(os.path.join(src_dir, f))
     )
